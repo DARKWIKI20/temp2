@@ -32,20 +32,23 @@ async def get_video_duration(file_path: str) -> float:
             "-of", "default=noprint_wrappers=1:nokey=1", file_path,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
-        stdout, _ = await proc.communicate()
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
         val = float(stdout.decode().strip())
         if val > 0:
             return val
     except Exception:
         pass
 
-    cmd = [FFMPEG_BIN, "-i", file_path]
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    _, stderr = await proc.communicate()
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
-    if match:
-        h, m, s = map(float, match.groups())
-        return h * 3600 + m * 60 + s
+    try:
+        cmd = [FFMPEG_BIN, "-i", file_path]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
+        if match:
+            h, m, s = map(float, match.groups())
+            return h * 3600 + m * 60 + s
+    except Exception:
+        pass
     return 0.0
 
 
@@ -116,7 +119,6 @@ async def start_processing(
     out_ext = "mp3" if mode == "mp3" else "mp4"
     out_path = os.path.join(TEMP_DIR, f"{task_id}_out.{out_ext}")
 
-    # دریافت مستقیم جریان فایل بدون واسطه و بدون قفل شدن بافر
     with open(in_path, "wb") as f:
         async for chunk in request.stream():
             f.write(chunk)
