@@ -2,10 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY worker/requirements.txt .
+# نصب FFmpeg اصلی لینوکس با تمام کدک‌ها
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY worker/main.py .
+COPY main.py .
 
 EXPOSE 8000
 
