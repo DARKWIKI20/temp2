@@ -215,9 +215,11 @@ async def ui_updater(state: dict):
             if act == "download":
                 text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
             elif act == "transfer":
-                text = f"🔄 در حال انتقال به ورکر پردازش:\n{bar}"
+                text = f"🔄 ارسال به سرور پردازش (شبکه داخلی):\n{bar}"
             elif act == "encode":
                 text = f"⚙️ در حال فشرده‌سازی و رندر:\n{bar}"
+            elif act == "download_worker":
+                text = f"📥 در حال دریافت فایل خروجی:\n{bar}"
             elif act == "upload":
                 text = f"📤 در حال ارسال به تلگرام:\n{bar}"
             else:
@@ -256,7 +258,7 @@ async def process_job(job: dict):
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
-        # ۱. دانلود فایل از تلگرام
+        # ۱. دریافت از تلگرام
         if initial_size < 19.5 * 1024 * 1024:
             ui_state["percent"] = 50.0
             file_info = await bot.get_file(job["file_id"])
@@ -266,45 +268,52 @@ async def process_job(job: dict):
             msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
             await msg.download(file_name=input_path, progress=pyro_progress, progress_args=(ui_state,))
 
-        # ۲. انتقال استریم باینری به ورکر با نوار پیشرفت زنده
+        if ACTIVE_PROCESSES[job_id]["cancelled"]:
+            return
+
+        # ۲. انتقال ایمن به ورکر با شبیه‌سازی پیشرفت سریع
         ui_state["action"] = "transfer"
         ui_state["percent"] = 0.0
 
-        total_bytes = os.path.getsize(input_path)
-
-        async def file_streamer():
-            sent = 0
-            chunk_size = 512 * 1024  # تکه‌های ۵۱۲ کیلوبایتی
-            with open(input_path, "rb") as f:
-                while chunk := f.read(chunk_size):
-                    sent += len(chunk)
-                    if total_bytes > 0:
-                        ui_state["percent"] = min(99.0, (sent / total_bytes) * 100.0)
-                    yield chunk
-
-        params = {
-            "mode": mode,
-            "res": cfg["res"],
-            "codec": cfg["codec"],
-            "crf": cfg["crf"],
-            "mute": "1" if cfg["mute"] else "0",
-            "speed": str(speed_factor)
-        }
+        async def simulate_transfer_progress():
+            try:
+                while ui_state["action"] == "transfer" and not ui_state.get("done"):
+                    ui_state["percent"] += 4.0
+                    if ui_state["percent"] > 99.0:
+                        ui_state["percent"] = 99.0
+                    await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                pass
+        
+        sim_task = asyncio.create_task(simulate_transfer_progress())
 
         async with aiohttp.ClientSession() as session:
+            data = aiohttp.FormData()
+            data.add_field("file", open(input_path, "rb"), filename="video.mp4")
+            data.add_field("mode", mode)
+            data.add_field("res", cfg["res"])
+            data.add_field("codec", cfg["codec"])
+            data.add_field("crf", cfg["crf"])
+            data.add_field("mute", "1" if cfg["mute"] else "0")
+            data.add_field("speed", str(speed_factor))
+
             target_url = f"{WORKER_URL}/start"
-            async with session.post(target_url, params=params, data=file_streamer(), timeout=aiohttp.ClientTimeout(total=1800)) as resp:
+            async with session.post(target_url, data=data, timeout=aiohttp.ClientTimeout(total=1800)) as resp:
+                sim_task.cancel()
                 if resp.status != 200:
                     raise RuntimeError(f"ورکر تسک را نپذیرفت: {await resp.text()}")
                 res_json = await resp.json()
                 worker_task_id = res_json["task_id"]
                 ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
 
+            if ACTIVE_PROCESSES[job_id]["cancelled"]:
+                return
+
             # ۳. نظارت زنده بر رندر ورکر
             ui_state["action"] = "encode"
             ui_state["percent"] = 1.0
 
-            while True:
+            while not ACTIVE_PROCESSES[job_id]["cancelled"]:
                 await asyncio.sleep(1.5)
                 async with session.get(f"{WORKER_URL}/status/{worker_task_id}", timeout=10) as resp:
                     if resp.status == 200:
@@ -315,15 +324,29 @@ async def process_job(job: dict):
                         if st.get("status") == "error":
                             raise RuntimeError(f"خطای رندر در ورکر: {st.get('error')}")
 
-            # دریافت فایل نهایی
+            if ACTIVE_PROCESSES[job_id]["cancelled"]:
+                return
+
+            # ۴. دریافت فایل نهایی (با نوار پیشرفت واقعی)
+            ui_state["action"] = "download_worker"
+            ui_state["percent"] = 0.0
+            
             async with session.get(f"{WORKER_URL}/download/{worker_task_id}", timeout=aiohttp.ClientTimeout(total=1800)) as resp:
+                total_size = int(resp.headers.get('Content-Length', 0))
+                downloaded = 0
                 with open(output_path, "wb") as out_f:
                     while chunk := await resp.content.read(1024 * 1024):
                         out_f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            ui_state["percent"] = min(99.0, (downloaded / total_size) * 100.0)
 
-        # ۴. ارسال خروجی به کاربر
+        if ACTIVE_PROCESSES[job_id]["cancelled"]:
+            return
+
+        # ۵. ارسال به تلگرام
         ui_state["action"] = "upload"
-        ui_state["percent"] = 50.0
+        ui_state["percent"] = 20.0
 
         final_size = os.path.getsize(output_path)
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
