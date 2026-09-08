@@ -3,7 +3,7 @@ import re
 import uuid
 import asyncio
 import subprocess
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTasks
 
@@ -106,21 +106,22 @@ async def run_ffmpeg_task(task_id: str, cmd: list, in_path: str, out_path: str, 
 
 @app.post("/start")
 async def start_processing(
-    file: UploadFile = File(...),
-    mode: str = Form("video"),
-    res: str = Form("720"),
-    codec: str = Form("h264"),
-    crf: str = Form("medium"),
-    mute: str = Form("0"),
-    speed: str = Form("1.0")
+    request: Request,
+    mode: str = "video",
+    res: str = "720",
+    codec: str = "h264",
+    crf: str = "medium",
+    mute: str = "0",
+    speed: str = "1.0"
 ):
     task_id = str(uuid.uuid4())
     in_path = os.path.join(TEMP_DIR, f"{task_id}_in.mp4")
     out_ext = "mp3" if mode == "mp3" else "mp4"
     out_path = os.path.join(TEMP_DIR, f"{task_id}_out.{out_ext}")
 
+    # دریافت مستقیم و بدون قفل جریان باینری
     with open(in_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
+        async for chunk in request.stream():
             f.write(chunk)
 
     is_mute = mute in ["1", "true", "True"]
