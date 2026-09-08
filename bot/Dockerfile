@@ -5,8 +5,6 @@ WORKDIR /app
 # نصب وابستگی‌ها
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+COPY main.py .
 
-# کپی اسکریپت اصلی
-COPY bot.py .
-
-CMD ["python", "bot.py"]
+CMD ["python", "main.py"]
