@@ -1,200 +1,388 @@
 import os
-import re
-import uuid
 import asyncio
-import subprocess
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTasks
+import logging
+import aiohttp
 
-app = FastAPI(title="Video Processing Worker")
-FFMPEG_BIN = "ffmpeg"
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.types import FSInputFile
+from pyrogram import Client as PyroClient
 
-TEMP_DIR = "temp_processing"
-os.makedirs(TEMP_DIR, exist_ok=True)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-TASKS = {}
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
+API_ID = int(os.getenv("API_ID", "26202905"))
+API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
+WORKER_URL = os.getenv("WORKER_URL", "http://honest-surprise.railway.internal:8000").rstrip("/")
+
+MAX_FILE_SIZE = 2000 * 1024 * 1024
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+pyro = PyroClient(name="bot_engine", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+JOB_QUEUE = asyncio.Queue()
+ACTIVE_PROCESSES = {}
+RUNNING_TASKS = {}
 
 
-def cleanup_files(*paths):
-    for p in paths:
-        if p and os.path.exists(p):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+def generate_progress_bar(percent: float) -> str:
+    total_blocks = 12
+    filled = int(round((percent / 100) * total_blocks))
+    filled = min(total_blocks, max(0, filled))
+    return f"[{'█' * filled}{'░' * (total_blocks - filled)}] {percent:.1f}%"
 
 
-async def get_video_duration(file_path: str) -> float:
-    # ابتدا تلاش با ffprobe برای دقت ۱۰۰ درصدی
+def encode_cfg(mode, res, codec, crf, mute, speed):
+    return f"{mode}:{res}:{codec}:{crf}:{'1' if mute else '0'}:{speed}"
+
+
+def decode_cfg(data_str):
+    p = data_str.split(":")
+    return {"mode": p[0], "res": p[1], "codec": p[2], "crf": p[3], "mute": p[4] == "1", "speed": p[5]}
+
+
+def build_config_keyboard(cfg: dict):
+    b = InlineKeyboardBuilder()
+    mode, res, codec, crf, mute, speed = cfg["mode"], cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"]
+
+    b.button(text="🎬 ویدیو" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed))
+    b.button(text="🎵 استخراج MP3" + (" ✅" if mode == "mp3" else ""), callback_data="cfg:" + encode_cfg("mp3", res, codec, crf, mute, speed))
+    b.button(text="🎞 گیف GIF" + (" ✅" if mode == "gif" else ""), callback_data="cfg:" + encode_cfg("gif", res, codec, crf, mute, speed))
+
+    if mode == "video":
+        for r_k, r_t in [("orig", "اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
+            b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="cfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed))
+        b.button(text="H.264" + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed))
+        b.button(text="H.265 (کم‌حجم)" + (" ✅" if codec == "h265" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h265", crf, mute, speed))
+        for c_k, c_t in [("light", "کاهش کم"), ("medium", "متعادل"), ("heavy", "کاهش زیاد")]:
+            b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, c_k, mute, speed))
+        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="cfg:" + encode_cfg(mode, res, codec, crf, not mute, speed))
+
+    if mode in ["video", "gif"]:
+        for s_k, s_t in [("1.0", "1x"), ("1.5", "1.5x"), ("2.0", "2x")]:
+            b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k))
+
+    b.button(text="🚀 شروع پردازش", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed)}")
+    b.button(text="❌ انصراف", callback_data="cancel_panel")
+
+    if mode == "video":
+        b.adjust(3, 4, 2, 3, 1, 3, 2)
+    elif mode == "gif":
+        b.adjust(3, 3, 2)
+    else:
+        b.adjust(3, 2)
+    return b.as_markup()
+
+
+def get_cancel_keyboard(job_id: str):
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ لغو فوری پردازش", callback_data=f"stop:{job_id}")
+    return b.as_markup()
+
+
+@dp.message(CommandStart())
+async def start_handler(message: types.Message):
+    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا سقف ۲ گیگابایت).")
+
+
+@dp.message(F.video | F.document)
+async def handle_video(message: types.Message):
+    video = message.video or (
+        message.document if message.document and message.document.mime_type and message.document.mime_type.startswith("video/") else None
+    )
+    if not video:
+        return await message.answer("⚠️ لطفاً فایل ویدیویی ارسال کنید.")
+    if video.file_size > MAX_FILE_SIZE:
+        return await message.answer("❌ حجم فایل بیشتر از سقف مجاز ۲ گیگابایت است.")
+
+    default_cfg = {"mode": "video", "res": "720", "codec": "h264", "crf": "medium", "mute": False, "speed": "1.0"}
+    await message.reply("⚙️ **تنظیمات تبدیل را مشخص کنید:**", reply_markup=build_config_keyboard(default_cfg))
+
+
+@dp.callback_query(F.data.startswith("cfg:"))
+async def update_settings(callback: types.CallbackQuery):
+    await callback.answer()
+    cfg = decode_cfg(callback.data[4:])
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", file_path,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
-        stdout, _ = await proc.communicate()
-        val = float(stdout.decode().strip())
-        if val > 0:
-            return val
-    except Exception:
+        await callback.message.edit_reply_markup(reply_markup=build_config_keyboard(cfg))
+    except TelegramBadRequest:
         pass
 
-    # فال‌بک با دستور استاندارد ffmpeg
-    cmd = [FFMPEG_BIN, "-i", file_path]
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    _, stderr = await proc.communicate()
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
-    if match:
-        h, m, s = map(float, match.groups())
-        return h * 3600 + m * 60 + s
-    return 0.0
+
+@dp.callback_query(F.data == "cancel_panel")
+async def cancel_panel(callback: types.CallbackQuery):
+    await callback.message.edit_text("❌ لغو شد.")
 
 
-async def run_ffmpeg_task(task_id: str, cmd: list, in_path: str, out_path: str, duration: float):
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-        TASKS[task_id]["proc"] = proc
-        time_us_pattern = re.compile(r"out_time_us=(\d+)")
-        time_str_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+@dp.callback_query(F.data.startswith("stop:"))
+async def stop_processing(callback: types.CallbackQuery):
+    job_id = callback.data.split(":")[1]
+    
+    if job_id in ACTIVE_PROCESSES or job_id in RUNNING_TASKS:
+        ACTIVE_PROCESSES[job_id]["cancelled"] = True
+        
+        task = RUNNING_TASKS.get(job_id)
+        if task and not task.done():
+            task.cancel()
 
-        while True:
-            line = await proc.stderr.readline()
-            if not line:
-                break
-            if TASKS[task_id].get("cancelled"):
-                proc.kill()
-                cleanup_files(in_path, out_path)
-                return
+        worker_task_id = ACTIVE_PROCESSES.get(job_id, {}).get("worker_task_id")
+        if worker_task_id:
+            async def notify_cancel():
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        await s.post(f"{WORKER_URL}/cancel/{worker_task_id}", timeout=3)
+                except Exception:
+                    pass
+            asyncio.create_task(notify_cancel())
 
-            line_str = line.decode(errors="ignore").strip()
-            current_secs = None
-
-            match_us = time_us_pattern.search(line_str)
-            if match_us:
-                current_secs = float(match_us.group(1)) / 1_000_000.0
-            else:
-                match_str = time_str_pattern.search(line_str)
-                if match_str:
-                    h, m, s = map(float, match_str.groups())
-                    current_secs = h * 3600 + m * 60 + s
-
-            if current_secs is not None and duration > 0:
-                pct = (current_secs / duration) * 100.0
-                TASKS[task_id]["percent"] = min(99.0, max(1.0, pct))
-
-        await proc.wait()
-
-        if TASKS[task_id].get("cancelled"):
-            cleanup_files(in_path, out_path)
-            TASKS.pop(task_id, None)
-            return
-
-        if proc.returncode == 0 and os.path.exists(out_path):
-            TASKS[task_id]["status"] = "done"
-            TASKS[task_id]["percent"] = 100.0
-        else:
-            TASKS[task_id]["status"] = "error"
-            TASKS[task_id]["error"] = f"FFmpeg exited with code {proc.returncode}"
-    except Exception as e:
-        TASKS[task_id]["status"] = "error"
-        TASKS[task_id]["error"] = str(e)
-
-
-@app.post("/start")
-async def start_processing(
-    file: UploadFile = File(...),
-    mode: str = Form("video"),
-    res: str = Form("720"),
-    codec: str = Form("h264"),
-    crf: str = Form("medium"),
-    mute: str = Form("0"),
-    speed: str = Form("1.0")
-):
-    task_id = str(uuid.uuid4())
-    in_path = os.path.join(TEMP_DIR, f"{task_id}_in.mp4")
-    out_ext = "mp3" if mode == "mp3" else "mp4"
-    out_path = os.path.join(TEMP_DIR, f"{task_id}_out.{out_ext}")
-
-    with open(in_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            f.write(chunk)
-
-    is_mute = mute in ["1", "true", "True"]
-    speed_factor = float(speed)
-    duration = await get_video_duration(in_path)
-    eff_duration = duration / speed_factor if speed_factor > 0 else duration
-
-    cmd = [FFMPEG_BIN, "-y", "-i", in_path, "-threads", "2", "-max_muxing_queue_size", "1024"]
-
-    if mode == "mp3":
-        cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", out_path]
-    elif mode == "gif":
-        vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-        vf += ["fps=15", "scale=480:-2:flags=lanczos"]
-        cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", out_path]
+        await callback.answer("پردازش بلافاصله متوقف شد.")
+        await callback.message.edit_text("🛑 پردازش لغو شد و نوبت صف آزاد گردید.")
     else:
-        crf_map = {"light": "23", "medium": "28", "heavy": "34"}
-        v_codec = "libx265" if codec == "h265" else "libx264"
-        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if res == "orig" else f"scale=-2:{res}:flags=lanczos"
-        vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-        vf.append(scale)
-        cmd += ["-map", "0:v:0", "-c:v", v_codec, "-vf", ",".join(vf), "-crf", crf_map.get(crf, "28"), "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
-        if is_mute:
-            cmd += ["-an"]
-        else:
-            cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-strict", "experimental"]
-            if speed_factor != 1.0:
-                cmd += ["-filter:a", f"atempo={speed_factor}"]
-        cmd += ["-progress", "pipe:2", out_path]
-
-    TASKS[task_id] = {
-        "status": "processing",
-        "percent": 1.0,
-        "in_path": in_path,
-        "out_path": out_path,
-        "proc": None,
-        "cancelled": False
-    }
-
-    asyncio.create_task(run_ffmpeg_task(task_id, cmd, in_path, out_path, eff_duration))
-    return {"task_id": task_id}
+        await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
 
 
-@app.get("/status/{task_id}")
-async def get_status(task_id: str):
-    if task_id not in TASKS:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return {
-        "status": TASKS[task_id]["status"],
-        "percent": TASKS[task_id]["percent"],
-        "error": TASKS[task_id].get("error")
-    }
+@dp.callback_query(F.data.startswith("run:"))
+async def enqueue_task(callback: types.CallbackQuery):
+    await callback.answer()
+    cfg = decode_cfg(callback.data[4:])
+    orig_msg = callback.message.reply_to_message
+    if not orig_msg:
+        return await callback.message.edit_text("❌ پیام ویدیوی مرجع یافت نشد.")
+
+    video = orig_msg.video or (
+        orig_msg.document if orig_msg.document and orig_msg.document.mime_type and orig_msg.document.mime_type.startswith("video/") else None
+    )
+    if not video:
+        return await callback.message.edit_text("❌ ویدیویی یافت نشد.")
+
+    job_id = f"{callback.message.chat.id}_{callback.message.message_id}"
+    status_msg = await callback.message.edit_text(
+        f"⏳ در صف انتظار سرور...\n👥 نوبت شما: **نفر {JOB_QUEUE.qsize() + 1}**",
+        reply_markup=get_cancel_keyboard(job_id)
+    )
+
+    ACTIVE_PROCESSES[job_id] = {"cancelled": False, "worker_task_id": None}
+    await JOB_QUEUE.put({
+        "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
+        "file_size": video.file_size, "file_id": video.file_id,
+        "chat_id": callback.message.chat.id, "user": callback.from_user, "status_msg": status_msg
+    })
 
 
-@app.get("/download/{task_id}")
-async def download_result(task_id: str, bg: BackgroundTasks):
-    if task_id not in TASKS or TASKS[task_id]["status"] != "done":
-        raise HTTPException(status_code=400, detail="File not ready")
-    out_path = TASKS[task_id]["out_path"]
-    in_path = TASKS[task_id]["in_path"]
-    bg.add_task(cleanup_files, in_path, out_path)
-    bg.add_task(TASKS.pop, task_id, None)
-    return FileResponse(out_path, media_type="application/octet-stream")
+async def queue_worker():
+    while True:
+        job = await JOB_QUEUE.get()
+        job_id = job["job_id"]
 
+        if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
+            ACTIVE_PROCESSES.pop(job_id, None)
+            JOB_QUEUE.task_done()
+            continue
 
-@app.post("/cancel/{task_id}")
-async def cancel_task(task_id: str):
-    if task_id in TASKS:
-        TASKS[task_id]["cancelled"] = True
-        proc = TASKS[task_id].get("proc")
-        if proc:
+        task = asyncio.create_task(process_job(job))
+        RUNNING_TASKS[job_id] = task
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            logging.info(f"Task {job_id} aborted.")
+        except Exception as e:
+            logging.error(f"Job {job_id} error: {e}", exc_info=True)
             try:
-                proc.kill()
-            except ProcessLookupError:
+                await job["status_msg"].edit_text(f"⚠️ خطایی رخ داد: `{e}`")
+            except Exception:
                 pass
-        cleanup_files(TASKS[task_id].get("in_path"), TASKS[task_id].get("out_path"))
-        TASKS.pop(task_id, None)
-    return {"status": "ok"}
+        finally:
+            RUNNING_TASKS.pop(job_id, None)
+            ACTIVE_PROCESSES.pop(job_id, None)
+            JOB_QUEUE.task_done()
+
+
+async def ui_updater(state: dict):
+    last_text = ""
+    while not state.get("done", False):
+        try:
+            bar = generate_progress_bar(state.get("percent", 0.0))
+            act = state.get("action", "")
+            if act == "download":
+                text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
+            elif act == "transfer":
+                text = f"🔄 در حال انتقال به ورکر پردازش:\n{bar}"
+            elif act == "encode":
+                text = f"⚙️ در حال فشرده‌سازی و رندر:\n{bar}"
+            elif act == "upload":
+                text = f"📤 در حال ارسال به تلگرام:\n{bar}"
+            else:
+                text = "⏳ لطفا کمی صبر کنید..."
+
+            if text != last_text:
+                await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]))
+                last_text = text
+        except (TelegramBadRequest, asyncio.CancelledError):
+            pass
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+
+def pyro_progress(curr, total, state):
+    if total > 0:
+        state["percent"] = (curr / total) * 100.0
+
+
+async def process_job(job: dict):
+    job_id = job["job_id"]
+    cfg = job["cfg"]
+    status_msg = job["status_msg"]
+    mode = cfg["mode"]
+    initial_size = job["file_size"]
+    speed_factor = float(cfg.get("speed", "1.0"))
+
+    input_path = os.path.join(DOWNLOAD_DIR, f"in_{job_id}.mp4")
+    ext = "mp3" if mode == "mp3" else "mp4"
+    output_path = os.path.join(DOWNLOAD_DIR, f"out_{job_id}.{ext}")
+
+    ui_state = {"status_msg": status_msg, "job_id": job_id, "action": "download", "percent": 0.0, "done": False}
+    ui_task = asyncio.create_task(ui_updater(ui_state))
+
+    try:
+        # ۱. دانلود فایل از تلگرام
+        if initial_size < 19.5 * 1024 * 1024:
+            ui_state["percent"] = 50.0
+            file_info = await bot.get_file(job["file_id"])
+            await bot.download_file(file_info.file_path, destination=input_path)
+            ui_state["percent"] = 100.0
+        else:
+            msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
+            await msg.download(file_name=input_path, progress=pyro_progress, progress_args=(ui_state,))
+
+        # ۲. انتقال استریم باینری به ورکر با نوار پیشرفت زنده
+        ui_state["action"] = "transfer"
+        ui_state["percent"] = 0.0
+
+        total_bytes = os.path.getsize(input_path)
+
+        async def file_streamer():
+            sent = 0
+            chunk_size = 512 * 1024  # تکه‌های ۵۱۲ کیلوبایتی
+            with open(input_path, "rb") as f:
+                while chunk := f.read(chunk_size):
+                    sent += len(chunk)
+                    if total_bytes > 0:
+                        ui_state["percent"] = min(99.0, (sent / total_bytes) * 100.0)
+                    yield chunk
+
+        params = {
+            "mode": mode,
+            "res": cfg["res"],
+            "codec": cfg["codec"],
+            "crf": cfg["crf"],
+            "mute": "1" if cfg["mute"] else "0",
+            "speed": str(speed_factor)
+        }
+
+        async with aiohttp.ClientSession() as session:
+            target_url = f"{WORKER_URL}/start"
+            async with session.post(target_url, params=params, data=file_streamer(), timeout=aiohttp.ClientTimeout(total=1800)) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"ورکر تسک را نپذیرفت: {await resp.text()}")
+                res_json = await resp.json()
+                worker_task_id = res_json["task_id"]
+                ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
+
+            # ۳. نظارت زنده بر رندر ورکر
+            ui_state["action"] = "encode"
+            ui_state["percent"] = 1.0
+
+            while True:
+                await asyncio.sleep(1.5)
+                async with session.get(f"{WORKER_URL}/status/{worker_task_id}", timeout=10) as resp:
+                    if resp.status == 200:
+                        st = await resp.json()
+                        ui_state["percent"] = st.get("percent", 1.0)
+                        if st.get("status") == "done":
+                            break
+                        if st.get("status") == "error":
+                            raise RuntimeError(f"خطای رندر در ورکر: {st.get('error')}")
+
+            # دریافت فایل نهایی
+            async with session.get(f"{WORKER_URL}/download/{worker_task_id}", timeout=aiohttp.ClientTimeout(total=1800)) as resp:
+                with open(output_path, "wb") as out_f:
+                    while chunk := await resp.content.read(1024 * 1024):
+                        out_f.write(chunk)
+
+        # ۴. ارسال خروجی به کاربر
+        ui_state["action"] = "upload"
+        ui_state["percent"] = 50.0
+
+        final_size = os.path.getsize(output_path)
+        reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
+        caption = f"✅ پردازش انجام شد\n\n📦 اولیه: {initial_size / (1024*1024):.2f} MB\n📉 خروجی: {final_size / (1024*1024):.2f} MB\n⚡ فشرده‌سازی: {reduction}%"
+
+        if final_size < 49.5 * 1024 * 1024:
+            if mode == "mp3":
+                await bot.send_audio(chat_id=job["chat_id"], audio=FSInputFile(output_path), caption=caption)
+            elif mode == "gif":
+                await bot.send_animation(chat_id=job["chat_id"], animation=FSInputFile(output_path), caption=caption)
+            else:
+                await bot.send_video(chat_id=job["chat_id"], video=FSInputFile(output_path), caption=caption, supports_streaming=True)
+        else:
+            if mode == "mp3":
+                await pyro.send_audio(chat_id=job["chat_id"], audio=output_path, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
+            elif mode == "gif":
+                await pyro.send_animation(chat_id=job["chat_id"], animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
+            else:
+                await pyro.send_video(chat_id=job["chat_id"], video=output_path, caption=caption, supports_streaming=True, progress=pyro_progress, progress_args=(ui_state,))
+
+        ui_state["done"] = True
+        ui_task.cancel()
+        await status_msg.delete()
+
+    finally:
+        ui_state["done"] = True
+        if not ui_task.done():
+            ui_task.cancel()
+        for p in (input_path, output_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
+async def start_pyrogram():
+    while True:
+        try:
+            await pyro.start()
+            logging.info("✅ کلاینت Pyrogram متصل شد.")
+            break
+        except Exception as e:
+            logging.warning(f"انتظار برای اتصال Pyrogram: {e}")
+            await asyncio.sleep(5)
+
+
+async def main():
+    asyncio.create_task(start_pyrogram())
+    asyncio.create_task(queue_worker())
+    logging.info("✅ ربات آنلاین و آماده است.")
+    try:
+        await dp.start_polling(bot, drop_pending_updates=True)
+    finally:
+        try:
+            await pyro.stop()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
