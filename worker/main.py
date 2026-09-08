@@ -8,7 +8,7 @@ from starlette.background import BackgroundTasks
 FFMPEG_BIN = "ffmpeg"
 
 app = FastAPI(title="Video Processing Worker")
-FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG_BIN = "ffmpeg"
 
 
 def cleanup_files(*file_paths):
