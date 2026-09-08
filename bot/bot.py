@@ -1,4 +1,5 @@
 import os
+import io
 import asyncio
 import logging
 import aiohttp
@@ -31,6 +32,30 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 JOB_QUEUE = asyncio.Queue()
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
+
+
+class TrackableFile(io.IOBase):
+    def __init__(self, path, state):
+        self._file = open(path, "rb")
+        self._total = os.path.getsize(path)
+        self._read_bytes = 0
+        self._state = state
+
+    def __len__(self):
+        return self._total
+
+    def read(self, size=-1):
+        data = self._file.read(size)
+        self._read_bytes += len(data)
+        if self._total > 0:
+            self._state["percent"] = min(99.0, (self._read_bytes / self._total) * 100.0)
+        return data
+
+    def close(self):
+        self._file.close()
+
+    def fileno(self):
+        return self._file.fileno()
 
 
 def generate_progress_bar(percent: float) -> str:
@@ -143,7 +168,7 @@ async def stop_processing(callback: types.CallbackQuery):
                     pass
             asyncio.create_task(notify_cancel())
 
-        await callback.answer("پردازش بلافاصله متوقف شد.")
+        await callback.answer("پردازش متوقف شد.")
         await callback.message.edit_text("🛑 پردازش لغو شد و نوبت صف آزاد گردید.")
     else:
         await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
@@ -215,7 +240,7 @@ async def ui_updater(state: dict):
             if act == "download":
                 text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
             elif act == "transfer":
-                text = f"🔄 ارسال سریع به سرور پردازش:\n{bar}"
+                text = f"🔄 ارسال واقعی و سریع به ورکر:\n{bar}"
             elif act == "encode":
                 text = f"⚙️ در حال فشرده‌سازی و رندر:\n{bar}"
             elif act == "download_worker":
@@ -258,7 +283,6 @@ async def process_job(job: dict):
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
-        # ۱. دریافت از تلگرام
         if initial_size < 19.5 * 1024 * 1024:
             ui_state["percent"] = 50.0
             file_info = await bot.get_file(job["file_id"])
@@ -271,22 +295,15 @@ async def process_job(job: dict):
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. انتقال ایمن با جریان خام و پارامترهای URL
         ui_state["action"] = "transfer"
         ui_state["percent"] = 0.0
 
-        async def simulate_transfer_progress():
-            try:
-                while ui_state["action"] == "transfer" and not ui_state.get("done"):
-                    ui_state["percent"] += 1.5
-                    if ui_state["percent"] > 99.0:
-                        ui_state["percent"] = 99.0
-                    await asyncio.sleep(0.3)
-            except asyncio.CancelledError:
-                pass
+        total_size = os.path.getsize(input_path)
+        headers = {
+            "Content-Length": str(total_size),
+            "Content-Type": "application/octet-stream"
+        }
         
-        sim_task = asyncio.create_task(simulate_transfer_progress())
-
         params = {
             "mode": mode,
             "res": cfg["res"],
@@ -297,22 +314,22 @@ async def process_job(job: dict):
         }
 
         async with aiohttp.ClientSession() as session:
-            target_url = f"{WORKER_URL}/start"
-            
-            # فایل به عنوان جریان مستقیم متصل می‌شود
-            with open(input_path, "rb") as f:
-                async with session.post(target_url, params=params, data=f, timeout=aiohttp.ClientTimeout(total=3600)) as resp:
-                    sim_task.cancel()
+            f_track = TrackableFile(input_path, ui_state)
+            try:
+                target_url = f"{WORKER_URL}/start"
+                # جریان کامل و خالص بدون FormData به همراه حجم دقیق
+                async with session.post(target_url, params=params, data=f_track, headers=headers, timeout=aiohttp.ClientTimeout(total=1800)) as resp:
                     if resp.status != 200:
-                        raise RuntimeError(f"ورکر تسک را نپذیرفت: {await resp.text()}")
+                        raise RuntimeError(f"خطای سرور پردازش: {await resp.text()}")
                     res_json = await resp.json()
                     worker_task_id = res_json["task_id"]
                     ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
+            finally:
+                f_track.close()
 
             if ACTIVE_PROCESSES[job_id]["cancelled"]:
                 return
 
-            # ۳. نظارت زنده بر رندر ورکر
             ui_state["action"] = "encode"
             ui_state["percent"] = 1.0
 
@@ -330,24 +347,22 @@ async def process_job(job: dict):
             if ACTIVE_PROCESSES[job_id]["cancelled"]:
                 return
 
-            # ۴. دریافت فایل نهایی
             ui_state["action"] = "download_worker"
             ui_state["percent"] = 0.0
             
             async with session.get(f"{WORKER_URL}/download/{worker_task_id}", timeout=aiohttp.ClientTimeout(total=1800)) as resp:
-                total_size = int(resp.headers.get('Content-Length', 0))
+                total_dl = int(resp.headers.get('Content-Length', 0))
                 downloaded = 0
                 with open(output_path, "wb") as out_f:
                     while chunk := await resp.content.read(1024 * 1024):
                         out_f.write(chunk)
                         downloaded += len(chunk)
-                        if total_size > 0:
-                            ui_state["percent"] = min(99.0, (downloaded / total_size) * 100.0)
+                        if total_dl > 0:
+                            ui_state["percent"] = min(99.0, (downloaded / total_dl) * 100.0)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۵. ارسال به تلگرام
         ui_state["action"] = "upload"
         ui_state["percent"] = 20.0
 
