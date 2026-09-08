@@ -5,7 +5,7 @@ import subprocess
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTasks
-import imageio_ffmpeg
+FFMPEG_BIN = "ffmpeg"
 
 app = FastAPI(title="Video Processing Worker")
 FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
