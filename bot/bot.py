@@ -30,6 +30,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 JOB_QUEUE = asyncio.Queue()
 ACTIVE_PROCESSES = {}
+RUNNING_TASKS = {}
 
 
 def generate_progress_bar(percent: float) -> str:
@@ -83,13 +84,13 @@ def build_config_keyboard(cfg: dict):
 
 def get_cancel_keyboard(job_id: str):
     b = InlineKeyboardBuilder()
-    b.button(text="❌ لغو پردازش", callback_data=f"stop:{job_id}")
+    b.button(text="❌ لغو فوری پردازش", callback_data=f"stop:{job_id}")
     return b.as_markup()
 
 
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
-    await message.answer("🎬 ویدیوی خود را بفرستید (حداکثر ۲ گیگابایت).")
+    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا سقف ۲ گیگابایت).")
 
 
 @dp.message(F.video | F.document)
@@ -103,7 +104,7 @@ async def handle_video(message: types.Message):
         return await message.answer("❌ حجم فایل بیشتر از سقف مجاز ۲ گیگابایت است.")
 
     default_cfg = {"mode": "video", "res": "720", "codec": "h264", "crf": "medium", "mute": False, "speed": "1.0"}
-    await message.reply("⚙️ **تنظیمات تبدیل را انتخاب کنید:**", reply_markup=build_config_keyboard(default_cfg))
+    await message.reply("⚙️ **تنظیمات تبدیل را مشخص کنید:**", reply_markup=build_config_keyboard(default_cfg))
 
 
 @dp.callback_query(F.data.startswith("cfg:"))
@@ -124,19 +125,30 @@ async def cancel_panel(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("stop:"))
 async def stop_processing(callback: types.CallbackQuery):
     job_id = callback.data.split(":")[1]
-    if job_id in ACTIVE_PROCESSES:
+    
+    if job_id in ACTIVE_PROCESSES or job_id in RUNNING_TASKS:
         ACTIVE_PROCESSES[job_id]["cancelled"] = True
-        worker_task_id = ACTIVE_PROCESSES[job_id].get("worker_task_id")
+        
+        # ۱. لغو بی‌درنگ تسک پایتون برای آزاد شدن صف
+        task = RUNNING_TASKS.get(job_id)
+        if task and not task.done():
+            task.cancel()
+
+        # ۲. ارسال فرمان کشتن FFmpeg به ورکر
+        worker_task_id = ACTIVE_PROCESSES.get(job_id, {}).get("worker_task_id")
         if worker_task_id:
-            try:
-                async with aiohttp.ClientSession() as s:
-                    await s.post(f"{WORKER_URL}/cancel/{worker_task_id}", timeout=5)
-            except Exception:
-                pass
-        await callback.answer("پردازش متوقف شد.")
-        await callback.message.edit_text("🛑 پردازش با موفقیت لغو شد.")
+            async def notify_cancel():
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        await s.post(f"{WORKER_URL}/cancel/{worker_task_id}", timeout=3)
+                except Exception:
+                    pass
+            asyncio.create_task(notify_cancel())
+
+        await callback.answer("پردازش بلافاصله متوقف شد.")
+        await callback.message.edit_text("🛑 پردازش لغو شد و نوبت صف آزاد گردید.")
     else:
-        await callback.answer("پردازشی برای لغو یافت نشد.", show_alert=True)
+        await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("run:"))
@@ -145,17 +157,17 @@ async def enqueue_task(callback: types.CallbackQuery):
     cfg = decode_cfg(callback.data[4:])
     orig_msg = callback.message.reply_to_message
     if not orig_msg:
-        return await callback.message.edit_text("❌ پیام ویدیو یافت نشد.")
+        return await callback.message.edit_text("❌ پیام ویدیوی مرجع یافت نشد.")
 
     video = orig_msg.video or (
         orig_msg.document if orig_msg.document and orig_msg.document.mime_type and orig_msg.document.mime_type.startswith("video/") else None
     )
     if not video:
-        return await callback.message.edit_text("❌ ویدیو یافت نشد.")
+        return await callback.message.edit_text("❌ ویدیویی یافت نشد.")
 
     job_id = f"{callback.message.chat.id}_{callback.message.message_id}"
     status_msg = await callback.message.edit_text(
-        f"⏳ در صف انتظار...\n👥 نوبت شما: **نفر {JOB_QUEUE.qsize() + 1}**",
+        f"⏳ در صف انتظار سرور...\n👥 نوبت شما: **نفر {JOB_QUEUE.qsize() + 1}**",
         reply_markup=get_cancel_keyboard(job_id)
     )
 
@@ -171,13 +183,21 @@ async def queue_worker():
     while True:
         job = await JOB_QUEUE.get()
         job_id = job["job_id"]
+
+        # اگر کاربر قبل از شروع تسک، آن را لغو کرده باشد
         if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
             ACTIVE_PROCESSES.pop(job_id, None)
             JOB_QUEUE.task_done()
             continue
 
+        # اجرای تسک به‌صورت کنترل‌پذیر
+        task = asyncio.create_task(process_job(job))
+        RUNNING_TASKS[job_id] = task
+
         try:
-            await process_job(job)
+            await task
+        except asyncio.CancelledError:
+            logging.info(f"Task {job_id} was successfully aborted.")
         except Exception as e:
             logging.error(f"Job {job_id} error: {e}", exc_info=True)
             try:
@@ -185,6 +205,7 @@ async def queue_worker():
             except Exception:
                 pass
         finally:
+            RUNNING_TASKS.pop(job_id, None)
             ACTIVE_PROCESSES.pop(job_id, None)
             JOB_QUEUE.task_done()
 
@@ -196,13 +217,15 @@ async def ui_updater(state: dict):
             bar = generate_progress_bar(state.get("percent", 0.0))
             act = state.get("action", "")
             if act == "download":
-                text = f"📥 در حال دریافت فایل:\n{bar}"
+                text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
+            elif act == "transfer":
+                text = f"🔄 در حال انتقال به ورکر پردازش...\n{bar}"
             elif act == "encode":
-                text = f"⚙️ در حال پردازش در ورکر:\n{bar}"
+                text = f"⚙️ در حال فشرده‌سازی و رندر:\n{bar}"
             elif act == "upload":
                 text = f"📤 در حال ارسال به تلگرام:\n{bar}"
             else:
-                text = "⏳ کمی صبر کنید..."
+                text = "⏳ لطفا کمی صبر کنید..."
 
             if text != last_text:
                 await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]))
@@ -213,7 +236,7 @@ async def ui_updater(state: dict):
             await asyncio.sleep(e.retry_after)
         except Exception:
             pass
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
 
 def pyro_progress(curr, total, state):
@@ -247,12 +270,9 @@ async def process_job(job: dict):
             msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
             await msg.download(file_name=input_path, progress=pyro_progress, progress_args=(ui_state,))
 
-        if ACTIVE_PROCESSES[job_id]["cancelled"]:
-            return
-
-        # مرحله ۲: ثبت تسک در ورکر
-        ui_state["action"] = "encode"
-        ui_state["percent"] = 0.0
+        # مرحله ۲: انتقال به ورکر
+        ui_state["action"] = "transfer"
+        ui_state["percent"] = 15.0
 
         async with aiohttp.ClientSession() as session:
             with open(input_path, "rb") as f:
@@ -265,40 +285,37 @@ async def process_job(job: dict):
                 data.add_field("mute", "1" if cfg["mute"] else "0")
                 data.add_field("speed", str(speed_factor))
 
-                async with session.post(f"{WORKER_URL}/start", data=data, timeout=aiohttp.ClientTimeout(total=300)) as resp:
+                async with session.post(f"{WORKER_URL}/start", data=data, timeout=aiohttp.ClientTimeout(total=600)) as resp:
                     if resp.status != 200:
                         raise RuntimeError(f"ورکر تسک را نپذیرفت: {await resp.text()}")
                     res_json = await resp.json()
                     worker_task_id = res_json["task_id"]
                     ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
 
-            # نظارت زنده بر درصد پردازش در ورکر
-            while not ACTIVE_PROCESSES[job_id]["cancelled"]:
-                await asyncio.sleep(2)
+            # مرحله ۳: نظارت زنده بر رندر
+            ui_state["action"] = "encode"
+            ui_state["percent"] = 1.0
+
+            while True:
+                await asyncio.sleep(1.5)
                 async with session.get(f"{WORKER_URL}/status/{worker_task_id}", timeout=10) as resp:
                     if resp.status == 200:
                         st = await resp.json()
-                        ui_state["percent"] = st.get("percent", 0.0)
+                        ui_state["percent"] = st.get("percent", 1.0)
                         if st.get("status") == "done":
                             break
                         if st.get("status") == "error":
                             raise RuntimeError(f"خطای رندر در ورکر: {st.get('error')}")
 
-            if ACTIVE_PROCESSES[job_id]["cancelled"]:
-                return
-
-            # دریافت فایل آماده‌شده
+            # دریافت خروجی آماده‌شده
             async with session.get(f"{WORKER_URL}/download/{worker_task_id}", timeout=aiohttp.ClientTimeout(total=1800)) as resp:
                 with open(output_path, "wb") as out_f:
                     while chunk := await resp.content.read(1024 * 1024):
                         out_f.write(chunk)
 
-        if ACTIVE_PROCESSES[job_id]["cancelled"]:
-            return
-
-        # مرحله ۳: ارسال به تلگرام
+        # مرحله ۴: ارسال به تلگرام
         ui_state["action"] = "upload"
-        ui_state["percent"] = 50.0
+        ui_state["percent"] = 25.0
 
         final_size = os.path.getsize(output_path)
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
