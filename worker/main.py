@@ -32,27 +32,65 @@ async def get_video_duration(file_path: str) -> float:
             "-of", "default=noprint_wrappers=1:nokey=1", file_path,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
-        val = float(stdout.decode().strip())
-        if val > 0:
-            return val
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
+            val = float(stdout.decode().strip())
+            if val > 0: return val
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
     except Exception:
         pass
 
     try:
         cmd = [FFMPEG_BIN, "-i", file_path]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=3.0)
-        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
-        if match:
-            h, m, s = map(float, match.groups())
-            return h * 3600 + m * 60 + s
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=4.0)
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
+            if match:
+                h, m, s = map(float, match.groups())
+                return h * 3600 + m * 60 + s
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
     except Exception:
         pass
     return 0.0
 
 
-async def run_ffmpeg_task(task_id: str, cmd: list, in_path: str, out_path: str, duration: float):
+async def run_ffmpeg_task(task_id: str, mode: str, res: str, codec: str, crf: str, mute: str, speed: str):
+    in_path = TASKS[task_id]["in_path"]
+    out_path = TASKS[task_id]["out_path"]
+    is_mute = mute in ["1", "true", "True"]
+    speed_factor = float(speed)
+
+    duration = await get_video_duration(in_path)
+    eff_duration = duration / speed_factor if speed_factor > 0 else duration
+
+    cmd = [FFMPEG_BIN, "-y", "-i", in_path, "-threads", "2", "-max_muxing_queue_size", "1024"]
+
+    if mode == "mp3":
+        cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", out_path]
+    elif mode == "gif":
+        vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
+        vf += ["fps=15", "scale=480:-2:flags=lanczos"]
+        cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", out_path]
+    else:
+        crf_map = {"light": "23", "medium": "28", "heavy": "34"}
+        v_codec = "libx265" if codec == "h265" else "libx264"
+        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if res == "orig" else f"scale=-2:{res}:flags=lanczos"
+        vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
+        vf.append(scale)
+        cmd += ["-map", "0:v:0", "-c:v", v_codec, "-vf", ",".join(vf), "-crf", crf_map.get(crf, "28"), "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+        if is_mute:
+            cmd += ["-an"]
+        else:
+            cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-strict", "experimental"]
+            if speed_factor != 1.0:
+                cmd += ["-filter:a", f"atempo={speed_factor}"]
+        cmd += ["-progress", "pipe:2", out_path]
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
@@ -66,7 +104,8 @@ async def run_ffmpeg_task(task_id: str, cmd: list, in_path: str, out_path: str, 
             if not line:
                 break
             if TASKS[task_id].get("cancelled"):
-                proc.kill()
+                try: proc.kill()
+                except Exception: pass
                 cleanup_files(in_path, out_path)
                 return
 
@@ -119,49 +158,23 @@ async def start_processing(
     out_ext = "mp3" if mode == "mp3" else "mp4"
     out_path = os.path.join(TEMP_DIR, f"{task_id}_out.{out_ext}")
 
-    # دریافت مستقیم و بدون قفل جریان باینری
+    # دریافت بایت به بایت مستقیماً روی دیسک، بدون درگیر شدن حافظه یا پارسرهای کُند
     with open(in_path, "wb") as f:
         async for chunk in request.stream():
             f.write(chunk)
 
-    is_mute = mute in ["1", "true", "True"]
-    speed_factor = float(speed)
-    duration = await get_video_duration(in_path)
-    eff_duration = duration / speed_factor if speed_factor > 0 else duration
-
-    cmd = [FFMPEG_BIN, "-y", "-i", in_path, "-threads", "2", "-max_muxing_queue_size", "1024"]
-
-    if mode == "mp3":
-        cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", out_path]
-    elif mode == "gif":
-        vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-        vf += ["fps=15", "scale=480:-2:flags=lanczos"]
-        cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", out_path]
-    else:
-        crf_map = {"light": "23", "medium": "28", "heavy": "34"}
-        v_codec = "libx265" if codec == "h265" else "libx264"
-        scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if res == "orig" else f"scale=-2:{res}:flags=lanczos"
-        vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-        vf.append(scale)
-        cmd += ["-map", "0:v:0", "-c:v", v_codec, "-vf", ",".join(vf), "-crf", crf_map.get(crf, "28"), "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
-        if is_mute:
-            cmd += ["-an"]
-        else:
-            cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-strict", "experimental"]
-            if speed_factor != 1.0:
-                cmd += ["-filter:a", f"atempo={speed_factor}"]
-        cmd += ["-progress", "pipe:2", out_path]
-
     TASKS[task_id] = {
         "status": "processing",
-        "percent": 1.0,
+        "percent": 0.0,
         "in_path": in_path,
         "out_path": out_path,
         "proc": None,
         "cancelled": False
     }
 
-    asyncio.create_task(run_ffmpeg_task(task_id, cmd, in_path, out_path, eff_duration))
+    # تحلیل اولیه با تاخیر انجام می‌شود تا سرور فوراً تسک آی‌دی را پس بدهد
+    asyncio.create_task(run_ffmpeg_task(task_id, mode, res, codec, crf, mute, speed))
+    
     return {"task_id": task_id}
 
 
