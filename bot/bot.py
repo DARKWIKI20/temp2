@@ -215,7 +215,7 @@ async def ui_updater(state: dict):
             if act == "download":
                 text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
             elif act == "transfer":
-                text = f"🔄 ارسال به سرور پردازش (شبکه داخلی):\n{bar}"
+                text = f"🔄 ارسال سریع به سرور پردازش:\n{bar}"
             elif act == "encode":
                 text = f"⚙️ در حال فشرده‌سازی و رندر:\n{bar}"
             elif act == "download_worker":
@@ -271,40 +271,43 @@ async def process_job(job: dict):
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. انتقال ایمن به ورکر با شبیه‌سازی پیشرفت سریع
+        # ۲. انتقال ایمن با جریان خام و پارامترهای URL
         ui_state["action"] = "transfer"
         ui_state["percent"] = 0.0
 
         async def simulate_transfer_progress():
             try:
                 while ui_state["action"] == "transfer" and not ui_state.get("done"):
-                    ui_state["percent"] += 4.0
+                    ui_state["percent"] += 1.5
                     if ui_state["percent"] > 99.0:
                         ui_state["percent"] = 99.0
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 pass
         
         sim_task = asyncio.create_task(simulate_transfer_progress())
 
-        async with aiohttp.ClientSession() as session:
-            data = aiohttp.FormData()
-            data.add_field("file", open(input_path, "rb"), filename="video.mp4")
-            data.add_field("mode", mode)
-            data.add_field("res", cfg["res"])
-            data.add_field("codec", cfg["codec"])
-            data.add_field("crf", cfg["crf"])
-            data.add_field("mute", "1" if cfg["mute"] else "0")
-            data.add_field("speed", str(speed_factor))
+        params = {
+            "mode": mode,
+            "res": cfg["res"],
+            "codec": cfg["codec"],
+            "crf": cfg["crf"],
+            "mute": "1" if cfg["mute"] else "0",
+            "speed": str(speed_factor)
+        }
 
+        async with aiohttp.ClientSession() as session:
             target_url = f"{WORKER_URL}/start"
-            async with session.post(target_url, data=data, timeout=aiohttp.ClientTimeout(total=1800)) as resp:
-                sim_task.cancel()
-                if resp.status != 200:
-                    raise RuntimeError(f"ورکر تسک را نپذیرفت: {await resp.text()}")
-                res_json = await resp.json()
-                worker_task_id = res_json["task_id"]
-                ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
+            
+            # فایل به عنوان جریان مستقیم متصل می‌شود
+            with open(input_path, "rb") as f:
+                async with session.post(target_url, params=params, data=f, timeout=aiohttp.ClientTimeout(total=3600)) as resp:
+                    sim_task.cancel()
+                    if resp.status != 200:
+                        raise RuntimeError(f"ورکر تسک را نپذیرفت: {await resp.text()}")
+                    res_json = await resp.json()
+                    worker_task_id = res_json["task_id"]
+                    ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
 
             if ACTIVE_PROCESSES[job_id]["cancelled"]:
                 return
@@ -327,7 +330,7 @@ async def process_job(job: dict):
             if ACTIVE_PROCESSES[job_id]["cancelled"]:
                 return
 
-            # ۴. دریافت فایل نهایی (با نوار پیشرفت واقعی)
+            # ۴. دریافت فایل نهایی
             ui_state["action"] = "download_worker"
             ui_state["percent"] = 0.0
             
