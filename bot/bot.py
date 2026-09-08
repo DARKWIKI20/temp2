@@ -14,11 +14,12 @@ from pyrogram import Client as PyroClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# دریافت ایمن متغیرها از تنظیمات محیطی سرور
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
 API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
-WORKER_URL = os.getenv("WORKER_URL", "http://worker.railway.internal:8000")
+WORKER_URL = os.getenv("WORKER_URL", "http://worker.railway.internal:8000").rstrip("/")
 
 MAX_FILE_SIZE = 2000 * 1024 * 1024
 
@@ -232,7 +233,9 @@ async def queue_worker():
         except Exception as e:
             logging.error(f"Error on job {job_id}: {e}", exc_info=True)
             try:
-                await job["status_msg"].edit_text("⚠️ خطایی در اجرای پردازش رخ داد.")
+                # گزارش شفاف و واضح خطا به کاربر
+                err_msg = str(e) if str(e) else type(e).__name__
+                await job["status_msg"].edit_text(f"⚠️ خطایی در اجرای پردازش رخ داد:\n\n`{type(e).__name__}`: `{err_msg}`")
             except Exception:
                 pass
         finally:
@@ -251,7 +254,7 @@ async def ui_updater_task(state: dict):
             if action == "download":
                 text = f"📥 در حال دریافت فایل:\n{bar}"
             elif action == "encode":
-                text = f"⚙️ در حال پردازش در ورکر مستقل...\n⏳ لطفاً شکیبا باشید (بدون افت حافظه)"
+                text = f"⚙️ در حال پردازش در ورکر اختصاصی...\n⏳ لطفاً شکیبا باشید..."
             elif action == "upload_pyro":
                 text = f"📤 در حال ارسال به تلگرام (موتور MTProto):\n{bar}"
             elif action == "upload_http":
@@ -302,13 +305,15 @@ async def process_job(job: dict):
     ui_task = asyncio.create_task(ui_updater_task(ui_state))
 
     try:
-        # مرحله ۱: دانلود فایل
+        # مرحله ۱: دانلود فایل بر اساس حجم
         if initial_size < 19.5 * 1024 * 1024:
             ui_state["percent"] = 50.0
             file_info = await bot.get_file(job["file_id"])
             await bot.download_file(file_info.file_path, destination=input_path)
             ui_state["percent"] = 100.0
         else:
+            if not pyro.is_connected:
+                raise RuntimeError("موتور Pyrogram هنوز متصل نشده است. چند لحظه دیگر تست کنید.")
             target_pyro_msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
             await target_pyro_msg.download(
                 file_name=input_path,
@@ -319,7 +324,7 @@ async def process_job(job: dict):
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # مرحله ۲: ارسال به ورکر مستقل جهت پردازش بدون اشغال رم کلاینت ربات
+        # مرحله ۲: ارسال فایل به سرویس ورکر
         ui_state["action"] = "encode"
         ui_state["percent"] = 0.0
 
@@ -334,13 +339,14 @@ async def process_job(job: dict):
                 data.add_field("mute", "1" if cfg["mute"] else "0")
                 data.add_field("speed", str(speed_factor))
 
-                async with session.post(f"{WORKER_URL}/process", data=data, timeout=aiohttp.ClientTimeout(total=2400)) as resp:
+                target_url = f"{WORKER_URL}/process"
+                async with session.post(target_url, data=data, timeout=aiohttp.ClientTimeout(total=2400)) as resp:
                     if resp.status != 200:
                         err_text = await resp.text()
                         logging.error(f"Worker Error: {err_text}")
                         ui_state["done"] = True
                         ui_task.cancel()
-                        return await status_msg.edit_text(f"❌ پردازش در سرور ورکر با خطا مواجه شد:\n`{err_text[:200]}`")
+                        return await status_msg.edit_text(f"❌ پردازش در سرور ورکر با خطا مواجه شد:\n\n`{err_text[:250]}`")
                     
                     with open(output_path, "wb") as out_f:
                         while True:
@@ -355,7 +361,7 @@ async def process_job(job: dict):
         final_size = os.path.getsize(output_path)
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
 
-        # مرحله ۳: ارسال فایل به کاربر
+        # مرحله ۳: آپلود خروجی
         if mode == "mp3":
             caption_text = f"✅ پردازش انجام شد\n\n📦 حجم اولیه: {initial_size / (1024*1024):.2f} MB\n📉 حجم نهایی: {final_size / (1024*1024):.2f} MB\n⚡ فشرده‌سازی: {reduction}% کاهش (فرمت MP3)"
         else:
@@ -391,7 +397,7 @@ async def process_job(job: dict):
         if ADMIN_ID and job["user"].id != ADMIN_ID:
             u = job["user"]
             u_name = f"@{u.username}" if u.username else "ندارد"
-            admin_text = f"🔔 لاگ موفق\n\n👤 کاربر: {u.full_name} ({u_name}) | {u.id}\n🎯 نوع: {mode.upper()}\n⚡ تغییر: {initial_size / (1024*1024):.2f} MB ← {final_size / (1024*1024):.2f} MB"
+            admin_text = f"🔔 گزارش رندر\n\n👤 کاربر: {u.full_name} ({u_name}) | {u.id}\n🎯 فرمت: {mode.upper()}\n⚡ حجم: {initial_size / (1024*1024):.2f} MB ← {final_size / (1024*1024):.2f} MB"
             try:
                 await bot.send_message(ADMIN_ID, admin_text)
             except Exception:
@@ -420,7 +426,7 @@ async def start_pyrogram_safely():
             if "FLOOD_WAIT" in str(e).upper():
                 match = re.search(r'\d+', str(e))
                 wait_time = int(match.group()) if match else 60
-                logging.warning(f"⚠️ محدودیت لاگین Pyrogram: {wait_time} ثانیه انتظار...")
+                logging.warning(f"⚠️ محدودیت ورود Pyrogram: {wait_time} ثانیه انتظار...")
                 await asyncio.sleep(wait_time + 1)
             else:
                 logging.error(f"خطا در اتصال Pyrogram: {e}")
