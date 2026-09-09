@@ -39,13 +39,13 @@ session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
+# کلاینت پایروگرام در حالت پایدار برای جلوگیری از قطعی سوکت
 pyro = PyroClient(
     name="bot_engine",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    ipv6=False,
-    max_concurrent_transmissions=4
+    ipv6=False
 )
 
 SUPPORT_MAP = {}
@@ -65,19 +65,19 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
-# --- پایگاه داده PostgreSQL ---
+# --- دیتابیس PostgreSQL ---
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
-        logging.warning("⚠️ DATABASE_URL تنظیم نشده است!")
+        logging.warning("⚠️ متغیر DATABASE_URL تنظیم نشده است!")
         return
 
     try:
         DB_POOL = await asyncpg.create_pool(
             DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            command_timeout=20
+            min_size=1,
+            max_size=5,
+            command_timeout=30
         )
         async with DB_POOL.acquire() as conn:
             await conn.execute("""
@@ -107,7 +107,7 @@ async def init_db():
                     max_vid_date TEXT
                 );
             """)
-        logging.info("✅ دیتابیس متصل و جدول‌ها آماده شدند.")
+        logging.info("✅ دیتابیس با موفقیت متصل شد و جدول‌ها ایجاد شدند.")
     except Exception as e:
         logging.error(f"❌ خطا در اتصال به دیتابیس: {e}")
 
@@ -134,7 +134,7 @@ async def set_daily_limit_mb(limit_mb: int):
                 ON CONFLICT (key) DO UPDATE SET value = $1;
             """, str(limit_mb))
     except Exception as e:
-        logging.error(f"خطا در ثبت لیمیت: {e}")
+        logging.error(f"خطا در ثبت محدودیت: {e}")
 
 
 async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tuple[bool, float, int]:
@@ -146,18 +146,22 @@ async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tup
         return True, 0.0, 0
 
     today = datetime.date.today()
-    async with DB_POOL.acquire() as conn:
-        row = await conn.fetchrow("SELECT today_date, today_mb FROM user_stats WHERE user_id = $1;", user_id)
-        if row:
-            saved_date = row["today_date"]
-            current_mb = row["today_mb"] if saved_date == today else 0.0
-        else:
-            current_mb = 0.0
+    try:
+        async with DB_POOL.acquire() as conn:
+            row = await conn.fetchrow("SELECT today_date, today_mb FROM user_stats WHERE user_id = $1;", user_id)
+            if row:
+                saved_date = row["today_date"]
+                current_mb = float(row["today_mb"]) if saved_date == today else 0.0
+            else:
+                current_mb = 0.0
 
-        if (current_mb + file_size_mb) > limit:
-            return False, current_mb, limit
+            if (current_mb + file_size_mb) > limit:
+                return False, current_mb, limit
 
-        return True, current_mb, limit
+            return True, current_mb, limit
+    except Exception as e:
+        logging.warning(f"Error checking daily usage: {e}")
+        return True, 0.0, limit
 
 
 async def record_job_stats_db(user_id: int, name: str, username: str, cost: float, file_size_mb: float, file_id: str):
@@ -167,101 +171,121 @@ async def record_job_stats_db(user_id: int, name: str, username: str, cost: floa
     today = datetime.date.today()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    async with DB_POOL.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO user_stats (
-                user_id, name, username, total_cost, total_jobs,
-                today_date, today_mb, max_vid_file_id, max_vid_cost, max_vid_size_mb, max_vid_date
-            )
-            VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $4, $6, $8)
-            ON CONFLICT (user_id) DO UPDATE SET
-                name = EXCLUDED.name,
-                username = EXCLUDED.username,
-                total_cost = COALESCE(user_stats.total_cost, 0.0) + EXCLUDED.total_cost,
-                total_jobs = COALESCE(user_stats.total_jobs, 0) + 1,
-                today_mb = CASE 
-                    WHEN user_stats.today_date = EXCLUDED.today_date THEN COALESCE(user_stats.today_mb, 0.0) + EXCLUDED.today_mb
-                    ELSE EXCLUDED.today_mb
-                END,
-                today_date = EXCLUDED.today_date,
-                max_vid_file_id = CASE 
-                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_file_id
-                    ELSE user_stats.max_vid_file_id
-                END,
-                max_vid_cost = CASE 
-                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.total_cost
-                    ELSE user_stats.max_vid_cost
-                END,
-                max_vid_size_mb = CASE 
-                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_size_mb
-                    ELSE user_stats.max_vid_size_mb
-                END,
-                max_vid_date = CASE 
-                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_date
-                    ELSE user_stats.max_vid_date
-                END;
-        """, user_id, name, username, cost, today, file_size_mb, file_id, now_str)
+    try:
+        async with DB_POOL.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO user_stats (
+                    user_id, name, username, total_cost, total_jobs,
+                    today_date, today_mb, max_vid_file_id, max_vid_cost, max_vid_size_mb, max_vid_date
+                )
+                VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $4, $6, $8)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    username = EXCLUDED.username,
+                    total_cost = COALESCE(user_stats.total_cost, 0.0) + EXCLUDED.total_cost,
+                    total_jobs = COALESCE(user_stats.total_jobs, 0) + 1,
+                    today_mb = CASE 
+                        WHEN user_stats.today_date = EXCLUDED.today_date THEN COALESCE(user_stats.today_mb, 0.0) + EXCLUDED.today_mb
+                        ELSE EXCLUDED.today_mb
+                    END,
+                    today_date = EXCLUDED.today_date,
+                    max_vid_file_id = CASE 
+                        WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_file_id
+                        ELSE user_stats.max_vid_file_id
+                    END,
+                    max_vid_cost = CASE 
+                        WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_cost
+                        ELSE user_stats.max_vid_cost
+                    END,
+                    max_vid_size_mb = CASE 
+                        WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_size_mb
+                        ELSE user_stats.max_vid_size_mb
+                    END,
+                    max_vid_date = CASE 
+                        WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_date
+                        ELSE user_stats.max_vid_date
+                    END;
+            """, user_id, name, username, cost, today, file_size_mb, file_id, now_str)
+    except Exception as e:
+        logging.error(f"خطا در ثبت آمار مصرف در دیتابیس: {e}")
 
 
 async def register_user_db(user_id: int, name: str = "", username: str = ""):
     if not DB_POOL:
         return
     today = datetime.date.today()
-    async with DB_POOL.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
-            VALUES ($1, $2, $3, $4, 0.0, 0, 0.0)
-            ON CONFLICT (user_id) DO UPDATE SET
-                name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
-                username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END;
-        """, user_id, name, username, today)
+    try:
+        async with DB_POOL.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
+                VALUES ($1, $2, $3, $4, 0.0, 0, 0.0)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
+                    username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END;
+            """, user_id, name, username, today)
+    except Exception as e:
+        logging.warning(f"Error registering user: {e}")
 
 
 async def get_all_user_ids() -> list[int]:
     if not DB_POOL:
         return []
-    async with DB_POOL.acquire() as conn:
-        rows = await conn.fetch("SELECT user_id FROM user_stats;")
-        return [r["user_id"] for r in rows]
+    try:
+        async with DB_POOL.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id FROM user_stats;")
+            return [r["user_id"] for r in rows]
+    except Exception:
+        return []
 
 
 async def get_top_users_db(limit: int = 10) -> list[dict]:
     if not DB_POOL:
         return []
-    async with DB_POOL.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT user_id, name, username, 
-                   COALESCE(total_cost, 0.0) as total_cost, 
-                   COALESCE(total_jobs, 0) as total_jobs, 
-                   COALESCE(today_mb, 0.0) as today_mb,
-                   max_vid_file_id, 
-                   COALESCE(max_vid_cost, 0.0) as max_vid_cost, 
-                   COALESCE(max_vid_size_mb, 0.0) as max_vid_size_mb, 
-                   max_vid_date
-            FROM user_stats
-            ORDER BY total_cost DESC, total_jobs DESC
-            LIMIT $1;
-        """, limit)
-        return [dict(r) for r in rows]
+    try:
+        async with DB_POOL.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT user_id, 
+                       COALESCE(name, 'کاربر') as name, 
+                       COALESCE(username, '') as username, 
+                       CAST(COALESCE(total_cost, 0.0) AS FLOAT) as total_cost, 
+                       CAST(COALESCE(total_jobs, 0) AS INT) as total_jobs, 
+                       CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb,
+                       max_vid_file_id, 
+                       CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
+                       CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
+                       max_vid_date
+                FROM user_stats
+                ORDER BY total_cost DESC, total_jobs DESC
+                LIMIT $1;
+            """, limit)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logging.error(f"Error reading top users: {e}")
+        return []
 
 
 async def get_user_stat_db(user_id: int) -> dict | None:
     if not DB_POOL:
         return None
-    async with DB_POOL.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT user_id, name, username, 
-                   COALESCE(total_cost, 0.0) as total_cost, 
-                   COALESCE(total_jobs, 0) as total_jobs, 
-                   COALESCE(today_mb, 0.0) as today_mb,
-                   max_vid_file_id, 
-                   COALESCE(max_vid_cost, 0.0) as max_vid_cost, 
-                   COALESCE(max_vid_size_mb, 0.0) as max_vid_size_mb, 
-                   max_vid_date
-            FROM user_stats
-            WHERE user_id = $1;
-        """, user_id)
-        return dict(row) if row else None
+    try:
+        async with DB_POOL.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT user_id, 
+                       COALESCE(name, 'کاربر') as name, 
+                       COALESCE(username, '') as username, 
+                       CAST(COALESCE(total_cost, 0.0) AS FLOAT) as total_cost, 
+                       CAST(COALESCE(total_jobs, 0) AS INT) as total_jobs, 
+                       CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb,
+                       max_vid_file_id, 
+                       CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
+                       CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
+                       max_vid_date
+                FROM user_stats
+                WHERE user_id = $1;
+            """, user_id)
+            return dict(row) if row else None
+    except Exception:
+        return None
 
 
 def get_cpu_seconds() -> float:
@@ -280,7 +304,6 @@ def get_cpu_seconds() -> float:
     return ru.user + ru.system + ru.children_user + ru.children_system
 
 
-# کش در حافظه برای سریع‌تر شدن خواندن تنظیمات کاربر
 def init_prefs_cache():
     global PREFS_CACHE
     if os.path.exists(PREFS_FILE):
@@ -311,7 +334,7 @@ def set_user_show_details(user_id: int, show_details: bool):
     save_prefs()
 
 
-# بهینه‌سازی توربو برای Pyrogram با چانک‌های ۱ مگابایتی
+# سیستم آپلود امن برای جلوگیری از شکستن سوکت تلگرام و Broken pipe
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -340,7 +363,8 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
             fp.close()
         return None
 
-    part_size = 1024 * 1024  # قطعات ۱ مگابایتی برای ۲ برابر شدن سرعت آپلود
+    # ۵۱۲ کیلوبایت: اندازه استاندارد بدون بروز خطای Broken Pipe
+    part_size = 512 * 1024
     total_parts = math.ceil(file_size / part_size)
     fid = file_id or random.randint(1, (1 << 63) - 1)
     is_big = file_size > 10 * 1024 * 1024
@@ -350,23 +374,31 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
             chunk = fp.read(part_size)
             if not chunk:
                 break
-            if is_big:
-                await self.invoke(
-                    raw.functions.upload.SaveBigFilePart(
-                        file_id=fid,
-                        file_part=part_index,
-                        file_total_parts=total_parts,
-                        bytes=chunk
-                    )
-                )
-            else:
-                await self.invoke(
-                    raw.functions.upload.SaveFilePart(
-                        file_id=fid,
-                        file_part=part_index,
-                        bytes=chunk
-                    )
-                )
+
+            for attempt in range(3):
+                try:
+                    if is_big:
+                        await self.invoke(
+                            raw.functions.upload.SaveBigFilePart(
+                                file_id=fid,
+                                file_part=part_index,
+                                file_total_parts=total_parts,
+                                bytes=chunk
+                            )
+                        )
+                    else:
+                        await self.invoke(
+                            raw.functions.upload.SaveFilePart(
+                                file_id=fid,
+                                file_part=part_index,
+                                bytes=chunk
+                            )
+                        )
+                    break
+                except (OSError, Exception) as err:
+                    if attempt == 2:
+                        raise err
+                    await asyncio.sleep(1)
 
             if progress:
                 curr = min((part_index + 1) * part_size, file_size)
@@ -554,7 +586,7 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
 
     await message.answer(
         "👋 سلام! به ربات پردازش و فشرده‌سازی ویدیو خوش آمدید.\n\n"
-        "🎬 ویدیوی خود را ارسال کنید (پشتیبانی مستقیم تا ۳۰۰ مگابایت).\n"
+        "🎬 ویدیوی خود را ارسال کنید (پشتیبانی مستقیم تا سقف ۳۰۰ مگابایت).\n"
         "از گزینه‌های زیر برای تنظیمات و ارتباط با پشتیبانی استفاده کنید:",
         reply_markup=get_main_reply_keyboard(message.from_user.id)
     )
@@ -573,8 +605,8 @@ async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
     await message.answer(
         f"👑 **پنل مدیریت ربات (متصل به دیتابیس)**\n\n"
-        f"👥 تعداد کل کاربران: **{len(all_users)} نفر**\n"
-        f"⏱ سقف مصرف روزانه: **{limit_str}**\n\n"
+        f"👥 تعداد کل کاربران ثبت‌شده: **{len(all_users)} نفر**\n"
+        f"⏱ سقف مصرف روزانه فعلی: **{limit_str}**\n\n"
         f"عملیات مورد نظر را انتخاب کنید:",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="Markdown"
@@ -598,17 +630,18 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
 
     top_users = await get_top_users_db(limit=10)
     if not top_users:
-        return await callback.message.answer("📊 هنوز کاربری در دیتابیس ثبت نشده است.")
+        return await callback.message.answer("📊 هنوز کاربری در دیتابیس ثبت نشده است. ابتدا یک فایل تستی تبدیل کنید.")
 
     builder = InlineKeyboardBuilder()
     text_lines = ["🏆 **رتبه‌بندی پرمصرف‌ترین کاربران (هزینه واقعی):**\n"]
 
     for idx, u in enumerate(top_users, start=1):
-        name = u.get("name") or "کاربر بدون نام"
+        name = u.get("name") or "کاربر"
         cost = float(u.get("total_cost") or 0.0)
         jobs = int(u.get("total_jobs") or 0)
+        uid = u.get("user_id")
         text_lines.append(f"**{idx}.** {name} | هزینه: **${cost:.4f}** ({jobs} ویدیو)")
-        builder.button(text=f"{idx}. {name[:12]} (${cost:.4f})", callback_data=f"adm_u_stat:{u['user_id']}")
+        builder.button(text=f"{idx}. {name[:12]} (${cost:.4f})", callback_data=f"adm_u_stat:{uid}")
 
     builder.button(text="🔙 بازگشت به پنل", callback_data="admin_back_main")
     builder.adjust(1)
@@ -746,7 +779,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
 async def process_custom_limit_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer("⚠️ لطفاً فقط عدد انگلیسی بفرستید:")
+        return await message.answer("⚠️ لطفاً فقط عدد انگلیسی ارسال کنید:")
 
     val = int(text)
     await set_daily_limit_mb(val)
@@ -784,7 +817,7 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
 
     await callback.message.answer(
         f"⚠️ **توجه:** پیام به کل کاربران ({len(users)} نفر) ارسال خواهد شد.\n\n"
-        f"✍️ پیام خود را ارسال کنید:",
+        f"✍️ پیام خود را بفرستید:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="Markdown"
     )
@@ -897,7 +930,7 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     await callback.message.edit_text("❌ عملیات لغو شد.")
 
 
-# --- تنظیمات نمایش ---
+# --- تنظیمات نمایش گزارش ---
 @dp.message(F.text == "⚙️ تنظیمات نمایش")
 @dp.callback_query(F.data == "open_settings")
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
@@ -907,7 +940,7 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
 
     text = (
         "⚙️ **تنظیمات نحوه نمایش گزارش پس از تحویل ویدیو:**\n\n"
-        "🔹 **خلاصه مشخصات کامل:** شامل فرمت، وضوح، کدک، فشرده‌سازی، صدا و سرعت.\n"
+        "🔹 **خلاصه مشخصات کامل:** شامل فرمت، وضوح، کدک، فشرده‌سازی، وضعیت صدا و سرعت.\n"
         "🔹 **گزارش ساده:** صرفاً حجم اولیه، حجم خروجی و درصد کاهش حجم."
     )
     kb = get_settings_inline_keyboard(user_id)
@@ -951,7 +984,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
     cancel_b = InlineKeyboardBuilder()
     cancel_b.button(text="❌ انصراف", callback_data="cancel_support")
 
-    msg_text = "✍️ پیام یا درخواست خود را ارسال کنید:"
+    msg_text = "✍️ پیام یا مشکل خود را به صورت کامل ارسال کنید:"
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
         await event.message.answer(msg_text, reply_markup=cancel_b.as_markup())
@@ -992,7 +1025,7 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
         SUPPORT_MAP[header_msg.message_id] = user_id
         SUPPORT_MAP[content_msg.message_id] = user_id
 
-        await message.reply("✅ پیام شما ارسال شد. به زودی بررسی خواهد شد.")
+        await message.reply("✅ پیام شما دریافت شد و برای پشتیبانی ارسال گردید.")
     except Exception as e:
         logging.error(f"Failed to forward message to admin: {e}")
         await message.reply("⚠️ خطا در ارسال پیام.")
@@ -1017,7 +1050,7 @@ async def handle_admin_reply(message: aiotypes.Message):
     try:
         await bot.send_message(chat_id=target_user_id, text="💬 **پاسخ پشتیبانی:**", parse_mode="Markdown")
         await message.copy_to(chat_id=target_user_id)
-        await message.reply("✅ پاسخ ارسال شد.")
+        await message.reply("✅ پاسخ با موفقیت برای کاربر ارسال شد (هویت شما کاملاً مخفی ماند).")
     except TelegramForbiddenError:
         await message.reply("❌ خطا: کاربر ربات را مسدود کرده است.")
     except Exception as e:
@@ -1031,7 +1064,7 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
     failed_job = FAILED_JOBS.pop(job_id, None)
 
     if not failed_job:
-        await callback.answer("مهلت گذشته است.", show_alert=True)
+        await callback.answer("مهلت ارسال این ویدیو گذشته است.", show_alert=True)
         return await callback.message.edit_text("❌ مهلت ارسال ویدیوی این خطا گذشته است.")
 
     await callback.answer("در حال ارسال ویدیو...")
@@ -1074,7 +1107,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و شروع پردازش ---
+# --- دریافت ویدیو و شروع جریان تبدیل ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1088,6 +1121,7 @@ async def handle_video(message: aiotypes.Message):
     if not video:
         return await message.answer("⚠️ لطفاً یک فایل ویدیویی معتبر ارسال کنید.")
 
+    # محدودیت فایل ۳۰۰ مگابایت به بالا
     if video.file_size > MAX_FILE_SIZE and message.from_user.id != ADMIN_ID:
         support_kb = InlineKeyboardBuilder()
         support_kb.button(text="📞 پیام به پشتیبانی", callback_data="start_support")
@@ -1232,11 +1266,11 @@ async def queue_worker():
             username = f"@{u.username}" if (u and u.username) else "ندارد"
 
             admin_err_alert = (
-                f"🚨 **گزارش خطای خودکار:**\n\n"
+                f"🚨 **گزارش خطای خودکار در پردازش:**\n\n"
                 f"👤 **کاربر:** {user_name} (`{user_id}`)\n"
                 f"🔗 **یوزرنیم:** {username}\n"
                 f"❌ **شرح خطا:** `{str(e)[:250]}`\n\n"
-                f"📋 **لاگ:**\n```text\n{clean_tb[:800]}\n```"
+                f"📋 **لاگ سیستمی:**\n```text\n{clean_tb[:800]}\n```"
             )
             try:
                 await bot.send_message(chat_id=ADMIN_ID, text=admin_err_alert, parse_mode="Markdown")
@@ -1304,7 +1338,7 @@ async def ui_updater(state: dict):
             await asyncio.sleep(e.retry_after)
         except Exception:
             pass
-        await asyncio.sleep(2.5)  # تعادل بهینه برای پیشگیری از لیمیت تلگرام
+        await asyncio.sleep(2)
 
 
 def pyro_progress(curr, total, state):
@@ -1337,7 +1371,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                 )
             except Exception:
                 pass
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
 
         try:
             if initial_size < 19.5 * 1024 * 1024:
@@ -1349,8 +1383,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     raise RuntimeError("پیام ویدیو در تلگرام بازخوانی نشد.")
 
                 try:
-                    # دانلود پرسرعت بافر ۵۱۲ کیلوبایتی
-                    with open(input_path, "wb", buffering=512 * 1024) as f:
+                    with open(input_path, "wb") as f:
                         curr_bytes = 0
                         async for chunk in pyro.stream_media(msg):
                             if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
@@ -1373,13 +1406,13 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     ui_state["percent"] = 100.0
                     return
                 else:
-                    raise RuntimeError(f"دانلود ناقص: {downloaded_bytes / (1024*1024):.2f}MB")
+                    raise RuntimeError(f"دانلود ناقص است: {downloaded_bytes / (1024*1024):.2f}MB")
             else:
                 raise RuntimeError("فایل ذخیره نشد.")
 
         except Exception as e:
             last_err = e
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
 
     raise RuntimeError(f"خطا در دانلود:\n{last_err}")
 
@@ -1446,13 +1479,9 @@ async def process_job(job: dict):
         duration = in_meta["duration"]
         eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
-        # تعیین بهینه تعداد تردها بر اساس منابع واقعی سرور
-        optimal_threads = str(min(2, os.cpu_count() or 2))
-
         cmd = [
             FFMPEG_BIN, "-y",
-            "-threads", optimal_threads,
-            "-thread_type", "slice+frame",
+            "-threads", "1",
             "-i", input_path,
             "-max_muxing_queue_size", "1024"
         ]
@@ -1495,11 +1524,10 @@ async def process_job(job: dict):
             if vf:
                 cmd += ["-vf", ",".join(vf)]
 
-            # تنظیمات اختصاصی کدک برای کمترین تاخیر و کمترین بار رم
             if v_codec == "libx264":
-                cmd += ["-tune", "fastdecode", "-x264opts", "rc-lookahead=0:sync-lookahead=0:bframes=0:subme=0:me=dia"]
+                cmd += ["-tune", "fastdecode", "-x264opts", "rc-lookahead=0:sync-lookahead=0:bframes=0"]
             elif v_codec == "libx265":
-                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0:no-sao=1"]
+                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0"]
 
             # کپی مستقیم صدا
             if cfg["mute"]:
@@ -1657,7 +1685,7 @@ async def process_job(job: dict):
         ui_task.cancel()
         await status_msg.delete()
 
-        # محاسبه دقیق هزینه واقعی
+        # محاسبه هزینه واقعی
         end_cpu_sec = get_cpu_seconds()
         end_wall_time = time.time()
 
@@ -1670,6 +1698,7 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
+        # ثبت داده در دیتابیس
         await record_job_stats_db(
             user_id=user_id,
             name=user_name,
