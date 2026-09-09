@@ -96,7 +96,7 @@ async def get_video_duration(file_path: str) -> float:
             "-of", "default=noprint_wrappers=1:nokey=1", file_path,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
         val = float(stdout.decode().strip())
         if val > 0:
             return val
@@ -106,7 +106,7 @@ async def get_video_duration(file_path: str) -> float:
     try:
         cmd = [FFMPEG_BIN, "-i", file_path]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=4.0)
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
         if match:
             h, m, s = map(float, match.groups())
@@ -168,7 +168,7 @@ async def stop_processing(callback: types.CallbackQuery):
         if task and not task.done():
             task.cancel()
 
-        await callback.answer("پردازش بلافاصله متوقف شد.")
+        await callback.answer("پردازش متوقف شد.")
         await callback.message.edit_text("🛑 پردازش لغو شد و نوبت صف آزاد گردید.")
     else:
         await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
@@ -194,11 +194,15 @@ async def enqueue_task(callback: types.CallbackQuery):
         reply_markup=get_cancel_keyboard(job_id)
     )
 
+    user = callback.from_user
+    username = user.username if user else None
+
     ACTIVE_PROCESSES[job_id] = {"cancelled": False, "proc": None}
     await JOB_QUEUE.put({
         "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
         "file_size": video.file_size, "file_id": video.file_id,
-        "chat_id": callback.message.chat.id, "user": callback.from_user, "status_msg": status_msg
+        "chat_id": callback.message.chat.id, "user": user,
+        "username": username, "status_msg": status_msg
     })
 
 
@@ -218,7 +222,7 @@ async def queue_worker():
         try:
             await task
         except asyncio.CancelledError:
-            logging.info(f"Task {job_id} cancelled cleanly.")
+            logging.info(f"Task {job_id} cancelled.")
         except Exception as e:
             logging.error(f"Job {job_id} error: {e}", exc_info=True)
             try:
@@ -279,20 +283,59 @@ async def process_job(job: dict):
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
-        # ۱. دانلود فایل مستقیم روی دیسک
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except OSError:
+                pass
+
+        # ۱. دریافت مستقیم فایل بر اساس حجم
         if initial_size < 19.5 * 1024 * 1024:
             ui_state["percent"] = 50.0
             file_info = await bot.get_file(job["file_id"])
             await bot.download_file(file_info.file_path, destination=input_path)
             ui_state["percent"] = 100.0
         else:
-            msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
-            await msg.download(file_name=input_path, progress=pyro_progress, progress_args=(ui_state,))
+            downloaded = None
+            try:
+                # اولویت ۱: دانلود پایدار مستقیم از طریق file_id
+                downloaded = await pyro.download_media(
+                    job["file_id"],
+                    file_name=input_path,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                )
+            except Exception as e_fid:
+                logging.warning(f"Download by file_id failed ({e_fid}), trying message fallback...")
+                try:
+                    msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
+                    if msg and not msg.empty and (msg.video or msg.document):
+                        downloaded = await msg.download(
+                            file_name=input_path,
+                            progress=pyro_progress,
+                            progress_args=(ui_state,)
+                        )
+                except Exception as e_msg:
+                    logging.error(f"Fallback download failed: {e_msg}")
+
+            if downloaded and os.path.exists(downloaded):
+                input_path = downloaded
+
+        # اعتبارسنجی قطعی دانلود قبل از اجرای پردازشگر
+        if not os.path.exists(input_path):
+            raise RuntimeError("فایل از تلگرام دانلود نشد (ارتباط سرور قطع شد).")
+
+        downloaded_bytes = os.path.getsize(input_path)
+        if downloaded_bytes == 0:
+            raise RuntimeError("فایل دانلود شده خالی (۰ بایت) است. لطفاً فایل را دوباره بفرستید.")
+
+        if downloaded_bytes < initial_size * 0.85:
+            raise RuntimeError(f"دانلود ناقص بود: {downloaded_bytes / (1024*1024):.1f}MB از {initial_size / (1024*1024):.1f}MB دریافت شد.")
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. پیکربندی بهینه FFmpeg (مصرف حداقل رم برای ویدیوهای سنگین)
+        # ۲. پیکربندی بهینه FFmpeg
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -357,7 +400,7 @@ async def process_job(job: dict):
             line_str = line.decode(errors="ignore").strip()
             if line_str:
                 last_error_lines.append(line_str)
-                if len(last_error_lines) > 5:
+                if len(last_error_lines) > 6:
                     last_error_lines.pop(0)
 
             current_secs = None
@@ -380,7 +423,7 @@ async def process_job(job: dict):
             return
 
         if proc.returncode != 0 or not os.path.exists(output_path):
-            err_details = "\n".join(last_error_lines[-3:]) if last_error_lines else "ناشناخته"
+            err_details = "\n".join(last_error_lines[-3:]) if last_error_lines else "خطای نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n`{err_details}`")
 
         # ۳. ارسال به تلگرام
@@ -391,6 +434,8 @@ async def process_job(job: dict):
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
         caption = f"✅ پردازش انجام شد\n\n📦 اولیه: {initial_size / (1024*1024):.2f} MB\n📉 خروجی: {final_size / (1024*1024):.2f} MB\n⚡ فشرده‌سازی: {reduction}%"
 
+        target_chat = f"@{job['username']}" if job.get("username") else job["chat_id"]
+
         if final_size < 49.5 * 1024 * 1024:
             if mode == "mp3":
                 await bot.send_audio(chat_id=job["chat_id"], audio=FSInputFile(output_path), caption=caption)
@@ -399,12 +444,22 @@ async def process_job(job: dict):
             else:
                 await bot.send_video(chat_id=job["chat_id"], video=FSInputFile(output_path), caption=caption, supports_streaming=True)
         else:
-            if mode == "mp3":
-                await pyro.send_audio(chat_id=job["chat_id"], audio=output_path, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
-            elif mode == "gif":
-                await pyro.send_animation(chat_id=job["chat_id"], animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
-            else:
-                await pyro.send_video(chat_id=job["chat_id"], video=output_path, caption=caption, supports_streaming=True, progress=pyro_progress, progress_args=(ui_state,))
+            try:
+                dest = target_chat
+                if mode == "mp3":
+                    await pyro.send_audio(chat_id=dest, audio=output_path, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
+                elif mode == "gif":
+                    await pyro.send_animation(chat_id=dest, animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
+                else:
+                    await pyro.send_video(chat_id=dest, video=output_path, caption=caption, supports_streaming=True, progress=pyro_progress, progress_args=(ui_state,))
+            except Exception:
+                dest = job["chat_id"]
+                if mode == "mp3":
+                    await pyro.send_audio(chat_id=dest, audio=output_path, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
+                elif mode == "gif":
+                    await pyro.send_animation(chat_id=dest, animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
+                else:
+                    await pyro.send_video(chat_id=dest, video=output_path, caption=caption, supports_streaming=True, progress=pyro_progress, progress_args=(ui_state,))
 
         ui_state["done"] = True
         ui_task.cancel()
@@ -422,28 +477,21 @@ async def process_job(job: dict):
                     pass
 
 
-async def start_pyrogram():
-    while True:
-        try:
-            await pyro.start()
-            logging.info("✅ کلاینت Pyrogram متصل شد.")
-            break
-        except Exception as e:
-            logging.warning(f"انتظار برای اتصال Pyrogram: {e}")
-            await asyncio.sleep(5)
-
-
 async def main():
-    asyncio.create_task(start_pyrogram())
+    logging.info("در حال اتصال کلاینت Pyrogram...")
+    try:
+        await pyro.start()
+        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
+    except Exception as e:
+        logging.error(f"خطا در شروع کلاینت Pyrogram: {e}")
+
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده است.")
+    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
-        try:
+        if pyro.is_connected:
             await pyro.stop()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
