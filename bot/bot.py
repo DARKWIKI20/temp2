@@ -12,13 +12,13 @@ import subprocess
 
 from aiogram import Bot, Dispatcher, F, types as aiotypes
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter, TelegramForbiddenError
+from aiogram.types import FSInputFile
 from pyrogram import Client as PyroClient, raw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -30,6 +30,7 @@ API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
 
 FFMPEG_BIN = "ffmpeg"
 MAX_FILE_SIZE = 2000 * 1024 * 1024
+PREFS_FILE = "user_prefs.json"
 
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
@@ -43,11 +44,47 @@ pyro = PyroClient(
     ipv6=False
 )
 
-# کلاس وضعیت برای ارسال پیام به پشتیبانی
+SUPPORT_MAP = {}
+
+
 class SupportState(StatesGroup):
     waiting_for_message = State()
 
-# موتور آپلود ترتیبی بدون قطعی با مدیریت کاور و استخراج صدا
+
+# مدیریت ذخیره پایدار تنظیمات کاربران
+def load_prefs() -> dict:
+    if os.path.exists(PREFS_FILE):
+        try:
+            with open(PREFS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_prefs(prefs: dict):
+    try:
+        with open(PREFS_FILE, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.warning(f"Prefs save error: {e}")
+
+
+def get_user_show_details(user_id: int) -> bool:
+    prefs = load_prefs()
+    return prefs.get(str(user_id), {}).get("show_details", True)
+
+
+def set_user_show_details(user_id: int, show_details: bool):
+    prefs = load_prefs()
+    u_key = str(user_id)
+    if u_key not in prefs:
+        prefs[u_key] = {}
+    prefs[u_key]["show_details"] = show_details
+    save_prefs(prefs)
+
+
+# موتور آپلود ترتیبی بدون قطعی
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -133,8 +170,22 @@ RUNNING_TASKS = {}
 
 def get_main_reply_keyboard():
     builder = ReplyKeyboardBuilder()
+    builder.button(text="⚙️ تنظیمات نمایش")
     builder.button(text="📞 پیام به پشتیبانی")
+    builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
+
+
+def get_settings_inline_keyboard(user_id: int):
+    show_details = get_user_show_details(user_id)
+    builder = InlineKeyboardBuilder()
+    toggle_text = "حالت فعلی: خلاصه کامل جزئیات ✅" if show_details else "حالت فعلی: فقط حجم فایل‌ها 📉"
+    action_text = "تغییر به: گزارش ساده" if show_details else "تغییر به: گزارش کامل همراه با مشخصات"
+    builder.button(text=toggle_text, callback_data="none")
+    builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
+    builder.button(text="بستن منو ❌", callback_data="close_settings")
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def generate_progress_bar(percent: float) -> str:
@@ -236,25 +287,69 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     await state.clear()
     builder = InlineKeyboardBuilder()
+    builder.button(text="⚙️ تنظیمات نمایش", callback_data="open_settings")
     builder.button(text="📞 پیام به پشتیبانی", callback_data="start_support")
+    builder.adjust(2)
 
     await message.answer(
         "👋 سلام! به ربات پردازش و فشرده‌سازی ویدیو خوش آمدید.\n\n"
-        "🎬 ویدیوی مورد نظر خود را ارسال کنید (پشتیبانی تا سقف ۲ گیگابایت).\n"
-        "یا از گزینه‌های زیر برای ارتباط با پشتیبانی استفاده کنید:",
+        "🎬 ویدیوی خود را بفرستید (تا سقف ۲ گیگابایت پشتیبانی می‌شود).\n"
+        "از دکمه‌های زیر برای تغییر تنظیمات و ارتباط با پشتیبانی استفاده کنید:",
         reply_markup=get_main_reply_keyboard()
     )
-    await message.answer("📌 منوی دسترسی سریع:", reply_markup=builder.as_markup())
+    await message.answer("📌 دسترسی سریع:", reply_markup=builder.as_markup())
 
 
-# --- بخش مدیریت پشتیبانی ---
+# --- مدیریت منوی تنظیمات نمایش ---
+@dp.message(F.text == "⚙️ تنظیمات نمایش")
+@dp.callback_query(F.data == "open_settings")
+async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
+    user_id = event.from_user.id
+    text = (
+        "⚙️ **تنظیمات نحوه نمایش گزارش پس از تحویل ویدیو:**\n\n"
+        "می‌توانید مشخص کنید هنگام تحویل فایل خروجی:\n"
+        "🔹 **خلاصه مشخصات کامل:** شامل وضوح، کدک، فشرده‌سازی، وضعیت صدا و سرعت باشد.\n"
+        "🔹 **گزارش ساده:** صرفاً حجم اولیه، خروجی و درصد فشرده‌سازی باشد."
+    )
+    kb = get_settings_inline_keyboard(user_id)
+    if isinstance(event, aiotypes.CallbackQuery):
+        await event.answer()
+        await event.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await event.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@dp.callback_query(F.data == "toggle_details")
+async def toggle_settings_option(callback: aiotypes.CallbackQuery):
+    user_id = callback.from_user.id
+    current_status = get_user_show_details(user_id)
+    set_user_show_details(user_id, not current_status)
+    await callback.answer("تنظیمات با موفقیت به‌روزرسانی شد.")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=get_settings_inline_keyboard(user_id))
+    except TelegramBadRequest:
+        pass
+
+
+@dp.callback_query(F.data == "close_settings")
+async def close_settings_menu(callback: aiotypes.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+
+
+@dp.callback_query(F.data == "none")
+async def no_action_callback(callback: aiotypes.CallbackQuery):
+    await callback.answer()
+
+
+# --- مدیریت پشتیبانی دو طرفه ---
 @dp.message(F.text == "📞 پیام به پشتیبانی")
 @dp.callback_query(F.data == "start_support")
 async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
     cancel_b = InlineKeyboardBuilder()
     cancel_b.button(text="❌ انصراف", callback_data="cancel_support")
 
-    msg_text = "✍️ لطفاً پیام، انتقاد یا مشکل خود را به صورت کامل بنویسید و ارسال کنید:"
+    msg_text = "✍️ پیام یا مشکل خود را به صورت کامل ارسال کنید:"
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
         await event.message.answer(msg_text, reply_markup=cancel_b.as_markup())
@@ -279,23 +374,56 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
     username = f"@{u.username}" if u.username else "ندارد"
 
     admin_header = (
-        f"📩 **پیام جدید از سمت کاربر برای پشتیبانی:**\n\n"
+        f"📩 **پیام جدید از کاربر به پشتیبانی:**\n\n"
         f"👤 **نام:** {name}\n"
         f"🆔 **آیدی عددی:** `{user_id}`\n"
         f"🔗 **یوزرنیم:** {username}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
+        f"💡 **برای پاسخ، مستقیماً روی این پیام ریپلای کنید.**"
     )
 
     try:
-        # ارسال پیام به ادمین همراه با مشخصات کاربر
-        await bot.send_message(chat_id=ADMIN_ID, text=admin_header, parse_mode="Markdown")
-        await message.forward(chat_id=ADMIN_ID)
-        await message.reply("✅ پیام شما دریافت شد و برای پشتیبانی ارسال گردید. به زودی بررسی خواهد شد.")
+        header_msg = await bot.send_message(chat_id=ADMIN_ID, text=admin_header, parse_mode="Markdown")
+        content_msg = await message.copy_to(chat_id=ADMIN_ID)
+
+        SUPPORT_MAP[header_msg.message_id] = user_id
+        SUPPORT_MAP[content_msg.message_id] = user_id
+
+        await message.reply("✅ پیام شما با موفقیت ارسال شد. به زودی پاسخ داده خواهد شد.")
     except Exception as e:
         logging.error(f"Failed to forward message to admin: {e}")
-        await message.reply("⚠️ متأسفانه در ارسال پیام به پشتیبانی خطایی رخ داد. لطفاً بعداً تلاش کنید.")
+        await message.reply("⚠️ متأسفانه در ارسال پیام خطایی رخ داد.")
 
     await state.clear()
+
+
+@dp.message(F.chat.id == ADMIN_ID, F.reply_to_message)
+async def handle_admin_reply(message: aiotypes.Message):
+    replied = message.reply_to_message
+    target_user_id = SUPPORT_MAP.get(replied.message_id)
+
+    if not target_user_id:
+        text_source = (replied.text or "") + " " + (replied.caption or "")
+        match = re.search(r"آیدی عددی:\s*`?(\d+)`?", text_source)
+        if match:
+            target_user_id = int(match.group(1))
+
+    if not target_user_id:
+        return
+
+    try:
+        await bot.send_message(
+            chat_id=target_user_id,
+            text="💬 **پاسخ پشتیبانی:**",
+            parse_mode="Markdown"
+        )
+        await message.copy_to(chat_id=target_user_id)
+        await message.reply("✅ پاسخ برای کاربر ارسال شد (هویت شما کاملاً مخفی ماند).")
+    except TelegramForbiddenError:
+        await message.reply("❌ خطا: کاربر ربات را بلاک کرده است.")
+    except Exception as e:
+        logging.error(f"Failed to send admin reply: {e}")
+        await message.reply(f"⚠️ ارسال پاسخ با خطا مواجه شد:\n`{e}`")
 
 
 # --- بخش پردازش ویدیو ---
@@ -305,7 +433,7 @@ async def handle_video(message: aiotypes.Message):
         message.document if message.document and message.document.mime_type and message.document.mime_type.startswith("video/") else None
     )
     if not video:
-        return await message.answer("⚠️ لطفاً فایل ویدیویی معتبر ارسال کنید.")
+        return await message.answer("⚠️ لطفاً فایل ویدیویی ارسال کنید.")
     if video.file_size > MAX_FILE_SIZE:
         return await message.answer("❌ حجم فایل بیشتر از سقف مجاز ۲ گیگابایت است.")
 
@@ -377,6 +505,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
         "file_size": video.file_size, "file_id": video.file_id,
         "chat_id": callback.message.chat.id, "user": callback.from_user,
+        "user_id": callback.from_user.id,
         "status_msg": status_msg
     })
 
@@ -539,6 +668,7 @@ async def process_job(job: dict):
     status_msg = job["status_msg"]
     mode = cfg["mode"]
     initial_size = job["file_size"]
+    user_id = job.get("user_id", job["chat_id"])
     speed_factor = float(cfg.get("speed", "1.0"))
 
     input_path = os.path.join(DOWNLOAD_DIR, f"in_{job_id}.mp4")
@@ -697,13 +827,41 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. آپلود ترتیبی بدون فریز و ارور
+        # ۴. آماده‌سازی کپشن بر اساس تنظیمات شخصی کاربر
         ui_state["action"] = "upload"
         ui_state["percent"] = 0.0
 
         final_size = os.path.getsize(output_path)
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
-        caption = f"✅ پردازش انجام شد\n\n📦 اولیه: {initial_size / (1024*1024):.2f} MB\n📉 خروجی: {final_size / (1024*1024):.2f} MB\n⚡ فشرده‌سازی: {reduction}%"
+
+        show_details = get_user_show_details(user_id)
+        base_caption = (
+            f"✅ پردازش انجام شد\n\n"
+            f"📦 اولیه: {initial_size / (1024*1024):.2f} MB\n"
+            f"📉 خروجی: {final_size / (1024*1024):.2f} MB\n"
+            f"⚡ فشرده‌سازی: {reduction}%"
+        )
+
+        if show_details:
+            if mode == "mp3":
+                summary_text = "\n\n🛠 **مشخصات تبدیل:**\n▫️ حالت: استخراج صوت MP3\n▫️ بیت‌ریت: 192kbps"
+            else:
+                res_names = {"orig": "کیفیت اصلی", "1080": "1080p", "720": "720p", "480": "480p"}
+                codec_names = {"h264": "H.264", "h265": "H.265 (HEVC)"}
+                crf_names = {"light": "کاهش کم (کیفیت بالا)", "medium": "متعادل", "heavy": "کاهش زیاد (کم‌حجم)"}
+                mute_name = "بی‌صدا 🔇" if cfg["mute"] else "همراه صدا 🔊"
+                
+                summary_text = (
+                    f"\n\n🛠 **تنظیمات اعمال‌شده:**\n"
+                    f"▫️ وضوح: {res_names.get(cfg['res'], cfg['res'])}\n"
+                    f"▫️ کدک: {codec_names.get(cfg['codec'], cfg['codec'])}\n"
+                    f"▫️ شدت فشرده‌سازی: {crf_names.get(cfg['crf'], cfg['crf'])}\n"
+                    f"▫️ وضعیت صدا: {mute_name}\n"
+                    f"▫️ سرعت ویدیو: {speed_factor}x"
+                )
+            caption = base_caption + summary_text
+        else:
+            caption = base_caption
 
         has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
         chat_id = job["chat_id"]
