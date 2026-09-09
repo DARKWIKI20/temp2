@@ -2,19 +2,21 @@ import os
 import gc
 import re
 import json
+import math
+import types
+import random
 import asyncio
 import logging
 import traceback
 import subprocess
 
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F, types as aiotypes
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import FSInputFile
-from pyrogram import Client as PyroClient
+from pyrogram import Client as PyroClient, raw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -26,7 +28,6 @@ API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
 FFMPEG_BIN = "ffmpeg"
 MAX_FILE_SIZE = 2000 * 1024 * 1024
 
-# تنظیم سشن با تایم‌اوت ۱۰ دقیقه‌ای برای آپلود پایدار فایل‌های حجیم
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
@@ -36,9 +37,57 @@ pyro = PyroClient(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    ipv6=False,
-    max_concurrent_transmissions=2
+    ipv6=False
 )
+
+# --- موتور آپلود پایدار ترتیبی برای جلوگیری از ددلاک ۰.۳٪ ---
+async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
+    file_size = os.path.getsize(path)
+    part_size = 512 * 1024
+    total_parts = math.ceil(file_size / part_size)
+    fid = file_id or random.randint(1, (1 << 63) - 1)
+    is_big = file_size > 10 * 1024 * 1024
+
+    with open(path, "rb") as f:
+        for part_index in range(total_parts):
+            chunk = f.read(part_size)
+            if not chunk:
+                break
+            if is_big:
+                await self.invoke(
+                    raw.functions.upload.SaveBigFilePart(
+                        file_id=fid,
+                        file_part=part_index,
+                        file_total_parts=total_parts,
+                        bytes=chunk
+                    )
+                )
+            else:
+                await self.invoke(
+                    raw.functions.upload.SaveFilePart(
+                        file_id=fid,
+                        file_part=part_index,
+                        bytes=chunk
+                    )
+                )
+
+            if progress:
+                curr = min((part_index + 1) * part_size, file_size)
+                try:
+                    res = progress(curr, file_size, *progress_args)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception:
+                    pass
+
+    file_name = os.path.basename(path)
+    if is_big:
+        return raw.types.InputFileBig(id=fid, parts=total_parts, name=file_name)
+    else:
+        return raw.types.InputFile(id=fid, parts=total_parts, name=file_name, md5_checksum="")
+
+# جایگزینی متد آپلود هسته پایروگرام
+pyro.save_file = types.MethodType(custom_save_file, pyro)
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -149,12 +198,12 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
 
 
 @dp.message(CommandStart())
-async def start_handler(message: types.Message):
+async def start_handler(message: aiotypes.Message):
     await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا سقف ۲ گیگابایت).")
 
 
 @dp.message(F.video | F.document)
-async def handle_video(message: types.Message):
+async def handle_video(message: aiotypes.Message):
     video = message.video or (
         message.document if message.document and message.document.mime_type and message.document.mime_type.startswith("video/") else None
     )
@@ -168,7 +217,7 @@ async def handle_video(message: types.Message):
 
 
 @dp.callback_query(F.data.startswith("cfg:"))
-async def update_settings(callback: types.CallbackQuery):
+async def update_settings(callback: aiotypes.CallbackQuery):
     await callback.answer()
     cfg = decode_cfg(callback.data[4:])
     try:
@@ -178,12 +227,12 @@ async def update_settings(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data == "cancel_panel")
-async def cancel_panel(callback: types.CallbackQuery):
+async def cancel_panel(callback: aiotypes.CallbackQuery):
     await callback.message.edit_text("❌ لغو شد.")
 
 
 @dp.callback_query(F.data.startswith("stop:"))
-async def stop_processing(callback: types.CallbackQuery):
+async def stop_processing(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":")[1]
     
     if job_id in ACTIVE_PROCESSES or job_id in RUNNING_TASKS:
@@ -207,7 +256,7 @@ async def stop_processing(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("run:"))
-async def enqueue_task(callback: types.CallbackQuery):
+async def enqueue_task(callback: aiotypes.CallbackQuery):
     await callback.answer()
     cfg = decode_cfg(callback.data[4:])
     orig_msg = callback.message.reply_to_message
@@ -262,7 +311,7 @@ async def queue_worker():
             err_text = (
                 f"⚠️ **خطایی در اجرای عملیات رخ داد:**\n\n"
                 f"❌ **شرح خطا:** `{str(e)[:200]}`\n\n"
-                f"📋 **جزئیات لاگ سیستمی (Traceback):**\n"
+                f"📋 **جزئیات لاگ سیستمی:**\n"
                 f"```text\n{clean_tb[:1200]}\n```"
             )
             try:
@@ -328,11 +377,9 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
         ui_state["percent"] = 0.0
 
         if attempt > 1:
-            logging.info(f"Retrying download for {job['job_id']} (Attempt {attempt}/{max_retries})...")
             try:
                 await job["status_msg"].edit_text(
-                    f"🔄 در حال تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...\n"
-                    f"لطفاً صبور باشید.",
+                    f"🔄 در حال تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...",
                     reply_markup=get_cancel_keyboard(job["job_id"])
                 )
             except Exception:
@@ -346,7 +393,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
             else:
                 msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
                 if not msg or msg.empty:
-                    raise RuntimeError(f"پیام ویدیو در تلگرام بازخوانی نشد.")
+                    raise RuntimeError("پیام ویدیو در تلگرام یافت نشد.")
 
                 try:
                     with open(input_path, "wb") as f:
@@ -373,17 +420,16 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     return
                 else:
                     raise RuntimeError(
-                        f"دانلود ناقص است: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB."
+                        f"دانلود ناقص: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB."
                     )
             else:
-                raise RuntimeError("فایل پس از دانلود ذخیره نشد.")
+                raise RuntimeError("فایل ذخیره نشد.")
 
         except Exception as e:
             last_err = e
-            logging.warning(f"Download attempt {attempt} error: {e}")
             await asyncio.sleep(2)
 
-    raise RuntimeError(f"دانلود فایل متوقف شد:\n{last_err}")
+    raise RuntimeError(f"دانلود متوقف شد:\n{last_err}")
 
 
 async def process_job(job: dict):
@@ -410,7 +456,7 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. دریافت کامل فایل
+        # ۱. دانلود فایل
         await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
@@ -418,7 +464,7 @@ async def process_job(job: dict):
 
         gc.collect()
 
-        # ۲. انکود ویدیو با حداقل مصرف رم
+        # ۲. فشرده‌سازی کم‌مصرف FFmpeg
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -521,7 +567,7 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. دریافت مشخصات زمان و ابعاد برای تلگرام
+        # ۳. دریافت متادیتا برای نمایش درست تایمر در تلگرام
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -530,7 +576,7 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. ارسال خروجی با مسیر تفکیک‌شده برای جلوگیری قطعی از قفل شدن
+        # ۴. آپلود با استریم ترتیبی Pyrogram
         ui_state["action"] = "upload"
         ui_state["percent"] = 0.0
 
@@ -541,59 +587,39 @@ async def process_job(job: dict):
         has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
         chat_id = job["chat_id"]
 
-        # فایل‌های زیر ۵۰ مگابایت با سرور مستقیم و پایدار Bot API ارسال می‌شوند
-        if final_size < 49.5 * 1024 * 1024:
-            ui_state["percent"] = 50.0
-            if mode == "mp3":
-                await bot.send_audio(chat_id=chat_id, audio=FSInputFile(output_path), duration=out_dur, caption=caption)
-            elif mode == "gif":
-                await bot.send_animation(chat_id=chat_id, animation=FSInputFile(output_path), caption=caption)
-            else:
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=FSInputFile(output_path),
-                    duration=out_dur,
-                    width=out_w,
-                    height=out_h,
-                    thumbnail=FSInputFile(thumb_path) if has_thumb else None,
-                    caption=caption,
-                    supports_streaming=True
-                )
-            ui_state["percent"] = 100.0
+        if mode == "mp3":
+            await pyro.send_audio(
+                chat_id=chat_id,
+                audio=output_path,
+                duration=out_dur,
+                caption=caption,
+                progress=pyro_progress,
+                progress_args=(ui_state,)
+            )
+        elif mode == "gif":
+            await pyro.send_animation(
+                chat_id=chat_id,
+                animation=output_path,
+                duration=out_dur,
+                width=out_w,
+                height=out_h,
+                unsave=True,
+                progress=pyro_progress,
+                progress_args=(ui_state,)
+            )
         else:
-            # فایل‌های بالای ۵۰ مگابایت با Pyrogram بدون ددلاک تامبنیل ارسال می‌شوند
-            if mode == "mp3":
-                await pyro.send_audio(
-                    chat_id=chat_id,
-                    audio=output_path,
-                    duration=out_dur,
-                    caption=caption,
-                    progress=pyro_progress,
-                    progress_args=(ui_state,)
-                )
-            elif mode == "gif":
-                await pyro.send_animation(
-                    chat_id=chat_id,
-                    animation=output_path,
-                    duration=out_dur,
-                    width=out_w,
-                    height=out_h,
-                    unsave=True,
-                    progress=pyro_progress,
-                    progress_args=(ui_state,)
-                )
-            else:
-                await pyro.send_video(
-                    chat_id=chat_id,
-                    video=output_path,
-                    duration=out_dur,
-                    width=out_w,
-                    height=out_h,
-                    caption=caption,
-                    supports_streaming=True,
-                    progress=pyro_progress,
-                    progress_args=(ui_state,)
-                )
+            await pyro.send_video(
+                chat_id=chat_id,
+                video=output_path,
+                duration=out_dur,
+                width=out_w,
+                height=out_h,
+                thumb=thumb_path if has_thumb else None,
+                caption=caption,
+                supports_streaming=True,
+                progress=pyro_progress,
+                progress_args=(ui_state,)
+            )
 
         ui_state["done"] = True
         ui_task.cancel()
@@ -615,7 +641,7 @@ async def main():
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
+        logging.info("✅ کلاینت Pyrogram متصل شد.")
     except Exception as e:
         logging.error(f"خطای شروع Pyrogram: {e}")
 
