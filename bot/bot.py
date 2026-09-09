@@ -8,6 +8,8 @@ import traceback
 import subprocess
 
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
@@ -24,10 +26,19 @@ API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
 FFMPEG_BIN = "ffmpeg"
 MAX_FILE_SIZE = 2000 * 1024 * 1024
 
-bot = Bot(token=BOT_TOKEN)
+# تنظیم سشن با تایم‌اوت ۱۰ دقیقه‌ای برای آپلود پایدار فایل‌های حجیم
+session = AiohttpSession()
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
-pyro = PyroClient(name="bot_engine", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+pyro = PyroClient(
+    name="bot_engine",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    ipv6=False,
+    max_concurrent_transmissions=2
+)
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -399,16 +410,15 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. دانلود فایل از تلگرام با اعتبارسنجی
+        # ۱. دریافت کامل فایل
         await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # پاکسازی کش رم قبل از شروع انکود برای جلوگیری از OOM
         gc.collect()
 
-        # ۲. پردازش و تبدیل با FFmpeg
+        # ۲. انکود ویدیو با حداقل مصرف رم
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -511,7 +521,7 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. دریافت ابعاد و مشخصات زمان فایل خروجی
+        # ۳. دریافت مشخصات زمان و ابعاد برای تلگرام
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -520,7 +530,7 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. ارسال مستقیم از طریق پروتکل Pyrogram با پیشرفت زنده از ۰ تا ۱۰۰ درصد
+        # ۴. ارسال خروجی با مسیر تفکیک‌شده برای جلوگیری قطعی از قفل شدن
         ui_state["action"] = "upload"
         ui_state["percent"] = 0.0
 
@@ -531,7 +541,27 @@ async def process_job(job: dict):
         has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
         chat_id = job["chat_id"]
 
-        try:
+        # فایل‌های زیر ۵۰ مگابایت با سرور مستقیم و پایدار Bot API ارسال می‌شوند
+        if final_size < 49.5 * 1024 * 1024:
+            ui_state["percent"] = 50.0
+            if mode == "mp3":
+                await bot.send_audio(chat_id=chat_id, audio=FSInputFile(output_path), duration=out_dur, caption=caption)
+            elif mode == "gif":
+                await bot.send_animation(chat_id=chat_id, animation=FSInputFile(output_path), caption=caption)
+            else:
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=FSInputFile(output_path),
+                    duration=out_dur,
+                    width=out_w,
+                    height=out_h,
+                    thumbnail=FSInputFile(thumb_path) if has_thumb else None,
+                    caption=caption,
+                    supports_streaming=True
+                )
+            ui_state["percent"] = 100.0
+        else:
+            # فایل‌های بالای ۵۰ مگابایت با Pyrogram بدون ددلاک تامبنیل ارسال می‌شوند
             if mode == "mp3":
                 await pyro.send_audio(
                     chat_id=chat_id,
@@ -559,29 +589,10 @@ async def process_job(job: dict):
                     duration=out_dur,
                     width=out_w,
                     height=out_h,
-                    thumb=thumb_path if has_thumb else None,
                     caption=caption,
                     supports_streaming=True,
                     progress=pyro_progress,
                     progress_args=(ui_state,)
-                )
-        except Exception as upload_err:
-            logging.warning(f"Pyrogram upload failed ({upload_err}), falling back to Bot API...")
-            # در صورت بروز هر خطای نادری در MTProto، ارسال با Bot API انجام می‌شود
-            if mode == "mp3":
-                await bot.send_audio(chat_id=chat_id, audio=FSInputFile(output_path), duration=out_dur, caption=caption)
-            elif mode == "gif":
-                await bot.send_animation(chat_id=chat_id, animation=FSInputFile(output_path), caption=caption)
-            else:
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=FSInputFile(output_path),
-                    duration=out_dur,
-                    width=out_w,
-                    height=out_h,
-                    thumbnail=FSInputFile(thumb_path) if has_thumb else None,
-                    caption=caption,
-                    supports_streaming=True
                 )
 
         ui_state["done"] = True
