@@ -32,7 +32,7 @@ API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 FFMPEG_BIN = "ffmpeg"
-MAX_FILE_SIZE = 2000 * 1024 * 1024
+MAX_FILE_SIZE = 300 * 1024 * 1024  # سقف ۳۰۰ مگابایت
 PREFS_FILE = "user_prefs.json"
 
 session = AiohttpSession()
@@ -44,12 +44,14 @@ pyro = PyroClient(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    ipv6=False
+    ipv6=False,
+    max_concurrent_transmissions=4
 )
 
 SUPPORT_MAP = {}
 FAILED_JOBS = {}
 DB_POOL = None
+PREFS_CACHE = {}
 
 
 class SupportState(StatesGroup):
@@ -63,17 +65,21 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
-# --- مدیریت دیتابیس PostgreSQL ---
+# --- پایگاه داده PostgreSQL ---
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
-        logging.warning("⚠️ متغیر DATABASE_URL تنظیم نشده است!")
+        logging.warning("⚠️ DATABASE_URL تنظیم نشده است!")
         return
 
     try:
-        DB_POOL = await asyncpg.create_pool(DATABASE_URL)
+        DB_POOL = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            command_timeout=20
+        )
         async with DB_POOL.acquire() as conn:
-            # جدول تنظیمات سراسری بات
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key TEXT PRIMARY KEY,
@@ -86,7 +92,6 @@ async def init_db():
                 ON CONFLICT (key) DO NOTHING;
             """)
 
-            # جدول آمار مصرف کاربران
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_stats (
                     user_id BIGINT PRIMARY KEY,
@@ -102,7 +107,7 @@ async def init_db():
                     max_vid_date TEXT
                 );
             """)
-        logging.info("✅ دیتابیس PostgreSQL متصل شد و جدول‌ها آماده هستند.")
+        logging.info("✅ دیتابیس متصل و جدول‌ها آماده شدند.")
     except Exception as e:
         logging.error(f"❌ خطا در اتصال به دیتابیس: {e}")
 
@@ -172,27 +177,27 @@ async def record_job_stats_db(user_id: int, name: str, username: str, cost: floa
             ON CONFLICT (user_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 username = EXCLUDED.username,
-                total_cost = user_stats.total_cost + EXCLUDED.total_cost,
-                total_jobs = user_stats.total_jobs + 1,
+                total_cost = COALESCE(user_stats.total_cost, 0.0) + EXCLUDED.total_cost,
+                total_jobs = COALESCE(user_stats.total_jobs, 0) + 1,
                 today_mb = CASE 
-                    WHEN user_stats.today_date = EXCLUDED.today_date THEN user_stats.today_mb + EXCLUDED.today_mb
+                    WHEN user_stats.today_date = EXCLUDED.today_date THEN COALESCE(user_stats.today_mb, 0.0) + EXCLUDED.today_mb
                     ELSE EXCLUDED.today_mb
                 END,
                 today_date = EXCLUDED.today_date,
                 max_vid_file_id = CASE 
-                    WHEN EXCLUDED.total_cost > user_stats.max_vid_cost THEN EXCLUDED.max_vid_file_id
+                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_file_id
                     ELSE user_stats.max_vid_file_id
                 END,
                 max_vid_cost = CASE 
-                    WHEN EXCLUDED.total_cost > user_stats.max_vid_cost THEN EXCLUDED.total_cost
+                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.total_cost
                     ELSE user_stats.max_vid_cost
                 END,
                 max_vid_size_mb = CASE 
-                    WHEN EXCLUDED.total_cost > user_stats.max_vid_cost THEN EXCLUDED.max_vid_size_mb
+                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_size_mb
                     ELSE user_stats.max_vid_size_mb
                 END,
                 max_vid_date = CASE 
-                    WHEN EXCLUDED.total_cost > user_stats.max_vid_cost THEN EXCLUDED.max_vid_date
+                    WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_date
                     ELSE user_stats.max_vid_date
                 END;
         """, user_id, name, username, cost, today, file_size_mb, file_id, now_str)
@@ -204,8 +209,8 @@ async def register_user_db(user_id: int, name: str = "", username: str = ""):
     today = datetime.date.today()
     async with DB_POOL.acquire() as conn:
         await conn.execute("""
-            INSERT INTO user_stats (user_id, name, username, today_date)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
+            VALUES ($1, $2, $3, $4, 0.0, 0, 0.0)
             ON CONFLICT (user_id) DO UPDATE SET
                 name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
                 username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END;
@@ -225,10 +230,16 @@ async def get_top_users_db(limit: int = 10) -> list[dict]:
         return []
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT user_id, name, username, total_cost, total_jobs, today_mb,
-                   max_vid_file_id, max_vid_cost, max_vid_size_mb, max_vid_date
+            SELECT user_id, name, username, 
+                   COALESCE(total_cost, 0.0) as total_cost, 
+                   COALESCE(total_jobs, 0) as total_jobs, 
+                   COALESCE(today_mb, 0.0) as today_mb,
+                   max_vid_file_id, 
+                   COALESCE(max_vid_cost, 0.0) as max_vid_cost, 
+                   COALESCE(max_vid_size_mb, 0.0) as max_vid_size_mb, 
+                   max_vid_date
             FROM user_stats
-            ORDER BY total_cost DESC
+            ORDER BY total_cost DESC, total_jobs DESC
             LIMIT $1;
         """, limit)
         return [dict(r) for r in rows]
@@ -239,15 +250,20 @@ async def get_user_stat_db(user_id: int) -> dict | None:
         return None
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT user_id, name, username, total_cost, total_jobs, today_mb,
-                   max_vid_file_id, max_vid_cost, max_vid_size_mb, max_vid_date
+            SELECT user_id, name, username, 
+                   COALESCE(total_cost, 0.0) as total_cost, 
+                   COALESCE(total_jobs, 0) as total_jobs, 
+                   COALESCE(today_mb, 0.0) as today_mb,
+                   max_vid_file_id, 
+                   COALESCE(max_vid_cost, 0.0) as max_vid_cost, 
+                   COALESCE(max_vid_size_mb, 0.0) as max_vid_size_mb, 
+                   max_vid_date
             FROM user_stats
             WHERE user_id = $1;
         """, user_id)
         return dict(row) if row else None
 
 
-# محاسبه زمان پردازنده از هسته لینوکس
 def get_cpu_seconds() -> float:
     try:
         if os.path.exists("/sys/fs/cgroup/cpu.stat"):
@@ -264,40 +280,38 @@ def get_cpu_seconds() -> float:
     return ru.user + ru.system + ru.children_user + ru.children_system
 
 
-# تنظیمات گزارش خروجی کاربر
-def load_prefs() -> dict:
+# کش در حافظه برای سریع‌تر شدن خواندن تنظیمات کاربر
+def init_prefs_cache():
+    global PREFS_CACHE
     if os.path.exists(PREFS_FILE):
         try:
             with open(PREFS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                PREFS_CACHE = json.load(f)
         except Exception:
-            return {}
-    return {}
+            PREFS_CACHE = {}
 
 
-def save_prefs(prefs: dict):
+def save_prefs():
     try:
         with open(PREFS_FILE, "w", encoding="utf-8") as f:
-            json.dump(prefs, f, ensure_ascii=False, indent=2)
+            json.dump(PREFS_CACHE, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
 
 def get_user_show_details(user_id: int) -> bool:
-    prefs = load_prefs()
-    return prefs.get(str(user_id), {}).get("show_details", True)
+    return PREFS_CACHE.get(str(user_id), {}).get("show_details", True)
 
 
 def set_user_show_details(user_id: int, show_details: bool):
-    prefs = load_prefs()
     u_key = str(user_id)
-    if u_key not in prefs:
-        prefs[u_key] = {}
-    prefs[u_key]["show_details"] = show_details
-    save_prefs(prefs)
+    if u_key not in PREFS_CACHE:
+        PREFS_CACHE[u_key] = {}
+    PREFS_CACHE[u_key]["show_details"] = show_details
+    save_prefs()
 
 
-# سیستم آپلود ترتیبی بدون قطعی
+# بهینه‌سازی توربو برای Pyrogram با چانک‌های ۱ مگابایتی
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -326,7 +340,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
             fp.close()
         return None
 
-    part_size = 512 * 1024
+    part_size = 1024 * 1024  # قطعات ۱ مگابایتی برای ۲ برابر شدن سرعت آپلود
     total_parts = math.ceil(file_size / part_size)
     fid = file_id or random.randint(1, (1 << 63) - 1)
     is_big = file_size > 10 * 1024 * 1024
@@ -491,7 +505,7 @@ async def get_media_meta(file_path: str) -> dict:
             "-of", "json", file_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
         data = json.loads(stdout.decode(errors="ignore"))
 
         if "format" in data and "duration" in data["format"]:
@@ -522,7 +536,7 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
             thumb_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await asyncio.wait_for(proc.communicate(), timeout=4.0)
+        await asyncio.wait_for(proc.communicate(), timeout=3.0)
     except Exception:
         pass
 
@@ -540,14 +554,14 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
 
     await message.answer(
         "👋 سلام! به ربات پردازش و فشرده‌سازی ویدیو خوش آمدید.\n\n"
-        "🎬 ویدیوی خود را ارسال کنید (پشتیبانی تا سقف ۲ گیگابایت).\n"
+        "🎬 ویدیوی خود را ارسال کنید (پشتیبانی مستقیم تا ۳۰۰ مگابایت).\n"
         "از گزینه‌های زیر برای تنظیمات و ارتباط با پشتیبانی استفاده کنید:",
         reply_markup=get_main_reply_keyboard(message.from_user.id)
     )
     await message.answer("📌 دسترسی سریع:", reply_markup=builder.as_markup())
 
 
-# --- پنل مدیریت ادمین با دیتابیس ---
+# --- پنل مدیریت ادمین ---
 @dp.message(Command("admin"))
 @dp.message(F.text == "👑 پنل مدیریت")
 async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
@@ -558,9 +572,9 @@ async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     limit = await get_daily_limit_mb()
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
     await message.answer(
-        f"👑 **پنل مدیریت ربات (متصل به پایگاه داده PostgreSQL)**\n\n"
-        f"👥 تعداد کل کاربران ثبت‌شده: **{len(all_users)} نفر**\n"
-        f"⏱ محدودیت روزانه فعلی: **{limit_str}**\n\n"
+        f"👑 **پنل مدیریت ربات (متصل به دیتابیس)**\n\n"
+        f"👥 تعداد کل کاربران: **{len(all_users)} نفر**\n"
+        f"⏱ سقف مصرف روزانه: **{limit_str}**\n\n"
         f"عملیات مورد نظر را انتخاب کنید:",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="Markdown"
@@ -584,16 +598,16 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
 
     top_users = await get_top_users_db(limit=10)
     if not top_users:
-        return await callback.message.answer("📊 هنوز آماری از مصرف کاربران در دیتابیس ثبت نشده است.")
+        return await callback.message.answer("📊 هنوز کاربری در دیتابیس ثبت نشده است.")
 
     builder = InlineKeyboardBuilder()
-    text_lines = ["🏆 **رتبه‌بندی پرمصرف‌ترین کاربران (بر اساس هزینه دلاری در دیتابیس):**\n"]
+    text_lines = ["🏆 **رتبه‌بندی پرمصرف‌ترین کاربران (هزینه واقعی):**\n"]
 
     for idx, u in enumerate(top_users, start=1):
-        name = u.get("name") or "نامشخص"
-        cost = u.get("total_cost", 0.0)
-        jobs = u.get("total_jobs", 0)
-        text_lines.append(f"**{idx}.** {name} | هزینه: **${cost:.4f}** ({jobs} تبدیل)")
+        name = u.get("name") or "کاربر بدون نام"
+        cost = float(u.get("total_cost") or 0.0)
+        jobs = int(u.get("total_jobs") or 0)
+        text_lines.append(f"**{idx}.** {name} | هزینه: **${cost:.4f}** ({jobs} ویدیو)")
         builder.button(text=f"{idx}. {name[:12]} (${cost:.4f})", callback_data=f"adm_u_stat:{u['user_id']}")
 
     builder.button(text="🔙 بازگشت به پنل", callback_data="admin_back_main")
@@ -615,9 +629,9 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 
     name = u.get("name") or "نامشخص"
     uname = f"@{u['username']}" if u.get("username") else "ندارد"
-    cost = u.get("total_cost", 0.0)
-    jobs = u.get("total_jobs", 0)
-    today_mb = u.get("today_mb", 0.0)
+    cost = float(u.get("total_cost") or 0.0)
+    jobs = int(u.get("total_jobs") or 0)
+    today_mb = float(u.get("today_mb") or 0.0)
 
     text = (
         f"👤 **جزئیات مصرف کاربر در دیتابیس:**\n\n"
@@ -631,11 +645,13 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
     if u.get("max_vid_file_id"):
+        max_cost = float(u.get("max_vid_cost") or 0.0)
+        max_size = float(u.get("max_vid_size_mb") or 0.0)
         text += (
             f"\n🔥 **پرمصرف‌ترین ویدیو:**\n"
-            f"▫️ هزینه این ویدیو: **${u.get('max_vid_cost', 0):.5f}**\n"
-            f"▫️ حجم اولیه: {u.get('max_vid_size_mb', 0):.1f} MB\n"
-            f"▫️ تاریخ: {u.get('max_vid_date', 'نامشخص')}"
+            f"▫️ هزینه این ویدیو: **${max_cost:.5f}**\n"
+            f"▫️ حجم اولیه: {max_size:.1f} MB\n"
+            f"▫️ تاریخ: {u.get('max_vid_date') or 'نامشخص'}"
         )
         builder.button(text="🎬 مشاهده و دریافت این ویدیو", callback_data=f"adm_get_vid:{target_uid}")
 
@@ -649,7 +665,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
-    await callback.answer("در حال ارسال ویدیو از دیتابیس...")
+    await callback.answer("در حال ارسال ویدیو...")
     target_uid = int(callback.data.split(":")[1])
 
     u = await get_user_stat_db(target_uid)
@@ -658,9 +674,9 @@ async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
 
     cap = (
         f"🎬 **پرمصرف‌ترین ویدیوی کاربر `{target_uid}`:**\n\n"
-        f"💵 هزینه واقعی پردازش: **${u.get('max_vid_cost', 0):.5f}**\n"
-        f"📦 حجم اولیه: {u.get('max_vid_size_mb', 0):.1f} MB\n"
-        f"📅 تاریخ: {u.get('max_vid_date', 'نامشخص')}"
+        f"💵 هزینه واقعی پردازش: **${float(u.get('max_vid_cost') or 0.0):.5f}**\n"
+        f"📦 حجم اولیه: {float(u.get('max_vid_size_mb') or 0.0):.1f} MB\n"
+        f"📅 تاریخ: {u.get('max_vid_date') or 'نامشخص'}"
     )
 
     try:
@@ -693,8 +709,8 @@ async def show_limit_settings(callback: aiotypes.CallbackQuery):
 
     text = (
         f"⏱ **تنظیم سقف محدودیت روزانه کاربران (Daily Limit):**\n\n"
-        f"▫️ سقف فعلی ذخیره‌شده: **{cur_str}**\n\n"
-        f"گزینه مورد نظر را انتخاب نمایید:"
+        f"▫️ سقف فعلی: **{cur_str}**\n\n"
+        f"گزینه مورد نظر را انتخاب کنید:"
     )
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
@@ -719,7 +735,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
     cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        "✏️ لطفاً سقف مجاز روزانه را به **مگابایت (MB)** بفرستید (مثال: `400` یا برای نامحدود `0`):",
+        "✏️ سقف مجاز روزانه را به **مگابایت (MB)** بفرستید (مثال: `400` یا برای نامحدود `0`):",
         reply_markup=cancel_b.as_markup(),
         parse_mode="Markdown"
     )
@@ -730,13 +746,13 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
 async def process_custom_limit_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer("⚠️ لطفاً فقط یک عدد معتبر ارسال کنید:")
+        return await message.answer("⚠️ لطفاً فقط عدد انگلیسی بفرستید:")
 
     val = int(text)
     await set_daily_limit_mb(val)
     await state.clear()
     val_str = f"{val} مگابایت" if val > 0 else "نامحدود"
-    await message.answer(f"✅ سقف محدودیت روزانه در دیتابیس بر روی **{val_str}** تنظیم شد.", parse_mode="Markdown")
+    await message.answer(f"✅ سقف محدودیت روزانه بر روی **{val_str}** تنظیم شد.", parse_mode="Markdown")
 
 
 @dp.callback_query(F.data == "admin_back_main")
@@ -748,9 +764,9 @@ async def back_to_admin_main(callback: aiotypes.CallbackQuery, state: FSMContext
     limit = await get_daily_limit_mb()
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
     await callback.message.edit_text(
-        f"👑 **پنل مدیریت ربات (متصل به پایگاه داده PostgreSQL)**\n\n"
-        f"👥 تعداد کل کاربران ثبت‌شده: **{len(all_users)} نفر**\n"
-        f"⏱ محدودیت روزانه فعلی: **{limit_str}**\n\n"
+        f"👑 **پنل مدیریت ربات (متصل به دیتابیس)**\n\n"
+        f"👥 تعداد کل کاربران: **{len(all_users)} نفر**\n"
+        f"⏱ سقف مصرف روزانه: **{limit_str}**\n\n"
         f"عملیات مورد نظر را انتخاب کنید:",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="Markdown"
@@ -767,8 +783,8 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
     cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        f"⚠️ **توجه:** پیام ارسالی شما **به کل کاربران دیتابیس ({len(users)} نفر)** فرستاده خواهد شد.\n\n"
-        f"✍️ لطفاً پیام خود را بفرستید:",
+        f"⚠️ **توجه:** پیام به کل کاربران ({len(users)} نفر) ارسال خواهد شد.\n\n"
+        f"✍️ پیام خود را ارسال کنید:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="Markdown"
     )
@@ -786,7 +802,7 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
         try:
             await message.copy_to(chat_id=uid)
             success += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
         except Exception:
             failed += 1
 
@@ -820,7 +836,7 @@ async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMCon
 async def process_user_id_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer("⚠️ لطفاً فقط یک شناسه عددی ارسال کنید:")
+        return await message.answer("⚠️ لطفاً فقط شناسه عددی بفرستید:")
 
     target_id = int(text)
     user_name = "نامشخص"
@@ -881,7 +897,7 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     await callback.message.edit_text("❌ عملیات لغو شد.")
 
 
-# --- مدیریت تنظیمات نمایش ---
+# --- تنظیمات نمایش ---
 @dp.message(F.text == "⚙️ تنظیمات نمایش")
 @dp.callback_query(F.data == "open_settings")
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
@@ -891,9 +907,8 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
 
     text = (
         "⚙️ **تنظیمات نحوه نمایش گزارش پس از تحویل ویدیو:**\n\n"
-        "می‌توانید مشخص کنید هنگام تحویل فایل خروجی:\n"
-        "🔹 **خلاصه مشخصات کامل:** شامل فرمت خروجی، وضوح، کدک، فشرده‌سازی، صدا و سرعت باشد.\n"
-        "🔹 **گزارش ساده:** صرفاً حجم اولیه، حجم خروجی و درصد کاهش حجم باشد."
+        "🔹 **خلاصه مشخصات کامل:** شامل فرمت، وضوح، کدک، فشرده‌سازی، صدا و سرعت.\n"
+        "🔹 **گزارش ساده:** صرفاً حجم اولیه، حجم خروجی و درصد کاهش حجم."
     )
     kb = get_settings_inline_keyboard(user_id)
     if isinstance(event, aiotypes.CallbackQuery):
@@ -936,7 +951,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
     cancel_b = InlineKeyboardBuilder()
     cancel_b.button(text="❌ انصراف", callback_data="cancel_support")
 
-    msg_text = "✍️ پیام یا مشکل خود را به صورت کامل بنویسید و ارسال کنید:"
+    msg_text = "✍️ پیام یا درخواست خود را ارسال کنید:"
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
         await event.message.answer(msg_text, reply_markup=cancel_b.as_markup())
@@ -950,7 +965,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
 async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("عملیات لغو شد.")
-    await callback.message.edit_text("❌ ارسال پیام به پشتیبانی لغو شد.")
+    await callback.message.edit_text("❌ ارسال پیام لغو شد.")
 
 
 @dp.message(SupportState.waiting_for_message)
@@ -977,10 +992,10 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
         SUPPORT_MAP[header_msg.message_id] = user_id
         SUPPORT_MAP[content_msg.message_id] = user_id
 
-        await message.reply("✅ پیام شما دریافت شد و برای پشتیبانی ارسال گردید.")
+        await message.reply("✅ پیام شما ارسال شد. به زودی بررسی خواهد شد.")
     except Exception as e:
         logging.error(f"Failed to forward message to admin: {e}")
-        await message.reply("⚠️ متأسفانه در ارسال پیام خطایی رخ داد.")
+        await message.reply("⚠️ خطا در ارسال پیام.")
 
     await state.clear()
 
@@ -1000,13 +1015,9 @@ async def handle_admin_reply(message: aiotypes.Message):
         return
 
     try:
-        await bot.send_message(
-            chat_id=target_user_id,
-            text="💬 **پاسخ پشتیبانی:**",
-            parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id=target_user_id, text="💬 **پاسخ پشتیبانی:**", parse_mode="Markdown")
         await message.copy_to(chat_id=target_user_id)
-        await message.reply("✅ پاسخ با موفقیت برای کاربر ارسال شد (هویت شما مخفی ماند).")
+        await message.reply("✅ پاسخ ارسال شد.")
     except TelegramForbiddenError:
         await message.reply("❌ خطا: کاربر ربات را مسدود کرده است.")
     except Exception as e:
@@ -1020,17 +1031,14 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
     failed_job = FAILED_JOBS.pop(job_id, None)
 
     if not failed_job:
-        await callback.answer("مهلت ارسال این ویدیو گذشته است.", show_alert=True)
-        return await callback.message.edit_text("❌ مهلت ارسال ویدیوی این خطا به پایان رسیده است.")
+        await callback.answer("مهلت گذشته است.", show_alert=True)
+        return await callback.message.edit_text("❌ مهلت ارسال ویدیوی این خطا گذشته است.")
 
-    await callback.answer("در حال ارسال ویدیو برای تیم پشتیبانی...")
+    await callback.answer("در حال ارسال ویدیو...")
     try:
         await bot.send_message(
             chat_id=ADMIN_ID,
-            text=(
-                f"🎥 **ویدیوی مربوط به خطای پردازش کاربر:**\n"
-                f"👤 {failed_job['user_name']} | `{failed_job['user_id']}`"
-            ),
+            text=f"🎥 **ویدیوی خطای کاربر:**\n👤 {failed_job['user_name']} | `{failed_job['user_id']}`",
             parse_mode="Markdown"
         )
         await bot.forward_message(
@@ -1038,11 +1046,9 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
             from_chat_id=failed_job["chat_id"],
             message_id=failed_job["msg_id"]
         )
-        await callback.message.edit_text(
-            "✅ ویدیوی شما همراه با گزارش خطا برای پشتیبانی ارسال شد. متشکریم!"
-        )
+        await callback.message.edit_text("✅ ویدیوی شما همراه با گزارش خطا ارسال شد.")
     except Exception as e:
-        logging.error(f"Error forwarding failed video: {e}")
+        logging.error(f"Error forwarding video: {e}")
         await callback.message.edit_text("⚠️ خطا در ارسال ویدیو.")
 
 
@@ -1051,7 +1057,7 @@ async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
     await callback.answer("انصراف ثبت شد.")
-    await callback.message.edit_text("👌 ویدیو ارسال نشد. لاگ سیستمی خطا پیش از این برای ادمین ارسال گردیده است.")
+    await callback.message.edit_text("👌 ویدیو ارسال نشد.")
 
 
 def detect_file_extension(message: aiotypes.Message) -> str:
@@ -1068,7 +1074,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و شروع جریان تبدیل ---
+# --- دریافت ویدیو و شروع پردازش ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1081,8 +1087,16 @@ async def handle_video(message: aiotypes.Message):
     )
     if not video:
         return await message.answer("⚠️ لطفاً یک فایل ویدیویی معتبر ارسال کنید.")
-    if video.file_size > MAX_FILE_SIZE:
-        return await message.answer("❌ حجم فایل بیشتر از سقف مجاز ۲ گیگابایت است.")
+
+    if video.file_size > MAX_FILE_SIZE and message.from_user.id != ADMIN_ID:
+        support_kb = InlineKeyboardBuilder()
+        support_kb.button(text="📞 پیام به پشتیبانی", callback_data="start_support")
+        return await message.reply(
+            "⚠️ **حجم فایل شما بیشتر از ۳۰۰ مگابایت است.**\n\n"
+            "برای پردازش حجم‌های ۳۰۰ مگابایت به بالا، لطفاً به پشتیبانی پیام دهید.",
+            reply_markup=support_kb.as_markup(),
+            parse_mode="Markdown"
+        )
 
     file_size_mb = video.file_size / (1024 * 1024)
     allowed, cur_mb, limit_mb = await check_and_update_daily_usage(message.from_user.id, file_size_mb)
@@ -1093,7 +1107,7 @@ async def handle_video(message: aiotypes.Message):
             f"سقف مجاز روزانه: **{limit_mb} مگابایت**\n"
             f"مصرف امروز شما: **{cur_mb:.1f} مگابایت**\n"
             f"حجم این فایل: **{file_size_mb:.1f} مگابایت**\n\n"
-            f"امکان پردازش وجود ندارد. فردا مجدداً تلاش فرمایید.",
+            f"امکان پردازش وجود ندارد. لطفاً فردا تلاش کنید.",
             parse_mode="Markdown"
         )
 
@@ -1218,13 +1232,11 @@ async def queue_worker():
             username = f"@{u.username}" if (u and u.username) else "ندارد"
 
             admin_err_alert = (
-                f"🚨 **گزارش خطای خودکار در پردازش ویدیو:**\n\n"
-                f"👤 **نام کاربر:** {user_name}\n"
-                f"🆔 **آیدی عددی:** `{user_id}`\n"
+                f"🚨 **گزارش خطای خودکار:**\n\n"
+                f"👤 **کاربر:** {user_name} (`{user_id}`)\n"
                 f"🔗 **یوزرنیم:** {username}\n"
                 f"❌ **شرح خطا:** `{str(e)[:250]}`\n\n"
-                f"📋 **لاگ سیستمی:**\n"
-                f"```text\n{clean_tb[:800]}\n```"
+                f"📋 **لاگ:**\n```text\n{clean_tb[:800]}\n```"
             )
             try:
                 await bot.send_message(chat_id=ADMIN_ID, text=admin_err_alert, parse_mode="Markdown")
@@ -1275,13 +1287,13 @@ async def ui_updater(state: dict):
             elif act == "encode":
                 eta_val = state.get("eta")
                 if state.get("file_size", 0) >= 50 * 1024 * 1024 and eta_val:
-                    text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}\n⏱ زمان تقریبی تا پایان پردازش: **{eta_val}**"
+                    text = f"⚙️ در حال فشرده‌سازی:\n{bar}\n⏱ زمان تقریبی: **{eta_val}**"
                 else:
-                    text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}"
+                    text = f"⚙️ در حال فشرده‌سازی:\n{bar}"
             elif act == "upload":
                 text = f"📤 در حال ارسال به تلگرام:\n{bar}"
             else:
-                text = "⏳ لطفا کمی صبر کنید..."
+                text = "⏳ لطفاً کمی صبر کنید..."
 
             if text != last_text:
                 await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]), parse_mode="Markdown")
@@ -1292,7 +1304,7 @@ async def ui_updater(state: dict):
             await asyncio.sleep(e.retry_after)
         except Exception:
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(2.5)  # تعادل بهینه برای پیشگیری از لیمیت تلگرام
 
 
 def pyro_progress(curr, total, state):
@@ -1320,12 +1332,12 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
         if attempt > 1:
             try:
                 await job["status_msg"].edit_text(
-                    f"🔄 در حال تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...",
+                    f"🔄 تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...",
                     reply_markup=get_cancel_keyboard(job["job_id"])
                 )
             except Exception:
                 pass
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
 
         try:
             if initial_size < 19.5 * 1024 * 1024:
@@ -1337,7 +1349,8 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     raise RuntimeError("پیام ویدیو در تلگرام بازخوانی نشد.")
 
                 try:
-                    with open(input_path, "wb") as f:
+                    # دانلود پرسرعت بافر ۵۱۲ کیلوبایتی
+                    with open(input_path, "wb", buffering=512 * 1024) as f:
                         curr_bytes = 0
                         async for chunk in pyro.stream_media(msg):
                             if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
@@ -1360,17 +1373,15 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     ui_state["percent"] = 100.0
                     return
                 else:
-                    raise RuntimeError(
-                        f"دانلود ناقص است: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB."
-                    )
+                    raise RuntimeError(f"دانلود ناقص: {downloaded_bytes / (1024*1024):.2f}MB")
             else:
                 raise RuntimeError("فایل ذخیره نشد.")
 
         except Exception as e:
             last_err = e
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
 
-    raise RuntimeError(f"دانلود متوقف شد:\n{last_err}")
+    raise RuntimeError(f"خطا در دانلود:\n{last_err}")
 
 
 async def process_job(job: dict):
@@ -1435,9 +1446,13 @@ async def process_job(job: dict):
         duration = in_meta["duration"]
         eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
+        # تعیین بهینه تعداد تردها بر اساس منابع واقعی سرور
+        optimal_threads = str(min(2, os.cpu_count() or 2))
+
         cmd = [
             FFMPEG_BIN, "-y",
-            "-threads", "1",
+            "-threads", optimal_threads,
+            "-thread_type", "slice+frame",
             "-i", input_path,
             "-max_muxing_queue_size", "1024"
         ]
@@ -1463,7 +1478,6 @@ async def process_job(job: dict):
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
 
-            # اعمال فیلتر تصویر تنها در صورت تغییر اندازه یا سرعت
             vf = []
             if speed_factor != 1.0:
                 vf.append(f"setpts={1.0 / speed_factor}*PTS")
@@ -1481,12 +1495,13 @@ async def process_job(job: dict):
             if vf:
                 cmd += ["-vf", ",".join(vf)]
 
+            # تنظیمات اختصاصی کدک برای کمترین تاخیر و کمترین بار رم
             if v_codec == "libx264":
-                cmd += ["-tune", "fastdecode", "-x264opts", "rc-lookahead=5:sync-lookahead=0:bframes=0"]
+                cmd += ["-tune", "fastdecode", "-x264opts", "rc-lookahead=0:sync-lookahead=0:bframes=0:subme=0:me=dia"]
             elif v_codec == "libx265":
-                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=5:bframes=0"]
+                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0:no-sao=1"]
 
-            # کپی مستقیم صوت بدون انکود جهت افزایش سرعت پردازش
+            # کپی مستقیم صدا
             if cfg["mute"]:
                 cmd += ["-an"]
             elif speed_factor != 1.0:
@@ -1642,7 +1657,7 @@ async def process_job(job: dict):
         ui_task.cancel()
         await status_msg.delete()
 
-        # محاسبه هزینه قطعی مصرفی
+        # محاسبه دقیق هزینه واقعی
         end_cpu_sec = get_cpu_seconds()
         end_wall_time = time.time()
 
@@ -1655,7 +1670,6 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
-        # ذخیره دائمی مشخصات و پرمصرف‌ترین ویدیو در PostgreSQL
         await record_job_stats_db(
             user_id=user_id,
             name=user_name,
@@ -1678,16 +1692,17 @@ async def process_job(job: dict):
 
 
 async def main():
+    init_prefs_cache()
     await init_db()
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
+        logging.info("✅ کلاینت Pyrogram متصل شد.")
     except Exception as e:
         logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
+    logging.info("✅ ربات آنلاین است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
