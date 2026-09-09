@@ -40,12 +40,14 @@ pyro = PyroClient(
     ipv6=False
 )
 
-# --- موتور آپلود پایدار ترتیبی با پشتیبانی از None و انواع فایل ---
+# موتور آپلود ترتیبی پایدار با مدیریت کامل کاور و استخراج صدا
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
 
     if isinstance(path, (str, bytes, os.PathLike)):
+        if not os.path.exists(path):
+            return None
         file_size = os.path.getsize(path)
         file_name = os.path.basename(path)
         fp = open(path, "rb")
@@ -53,14 +55,22 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
     else:
         fp = path
         file_name = getattr(fp, "name", "file.bin")
-        curr_pos = fp.tell()
-        fp.seek(0, os.SEEK_END)
-        file_size = fp.tell()
-        fp.seek(curr_pos)
+        try:
+            curr_pos = fp.tell()
+            fp.seek(0, os.SEEK_END)
+            file_size = fp.tell()
+            fp.seek(curr_pos)
+        except Exception:
+            file_size = 0
         should_close = False
 
+    if file_size == 0:
+        if should_close:
+            fp.close()
+        return None
+
     part_size = 512 * 1024
-    total_parts = math.ceil(file_size / part_size) if file_size > 0 else 1
+    total_parts = math.ceil(file_size / part_size)
     fid = file_id or random.randint(1, (1 << 63) - 1)
     is_big = file_size > 10 * 1024 * 1024
 
@@ -136,7 +146,6 @@ def build_config_keyboard(cfg: dict):
 
     b.button(text="🎬 ویدیو" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed))
     b.button(text="🎵 استخراج MP3" + (" ✅" if mode == "mp3" else ""), callback_data="cfg:" + encode_cfg("mp3", res, codec, crf, mute, speed))
-    b.button(text="🎞 گیف GIF" + (" ✅" if mode == "gif" else ""), callback_data="cfg:" + encode_cfg("gif", res, codec, crf, mute, speed))
 
     if mode == "video":
         for r_k, r_t in [("orig", "اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
@@ -146,8 +155,6 @@ def build_config_keyboard(cfg: dict):
         for c_k, c_t in [("light", "کاهش کم"), ("medium", "متعادل"), ("heavy", "کاهش زیاد")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, c_k, mute, speed))
         b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="cfg:" + encode_cfg(mode, res, codec, crf, not mute, speed))
-
-    if mode in ["video", "gif"]:
         for s_k, s_t in [("1.0", "1x"), ("1.5", "1.5x"), ("2.0", "2x")]:
             b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k))
 
@@ -155,11 +162,9 @@ def build_config_keyboard(cfg: dict):
     b.button(text="❌ انصراف", callback_data="cancel_panel")
 
     if mode == "video":
-        b.adjust(3, 4, 2, 3, 1, 3, 2)
-    elif mode == "gif":
-        b.adjust(3, 3, 2)
+        b.adjust(2, 4, 2, 3, 1, 3, 2)
     else:
-        b.adjust(3, 2)
+        b.adjust(2, 2)
     return b.as_markup()
 
 
@@ -410,7 +415,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
             else:
                 msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
                 if not msg or msg.empty:
-                    raise RuntimeError("پیام ویدیو در تلگرام یافت نشد.")
+                    raise RuntimeError("پیام ویدیو در تلگرام بازخوانی نشد.")
 
                 try:
                     with open(input_path, "wb") as f:
@@ -437,7 +442,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     return
                 else:
                     raise RuntimeError(
-                        f"دانلود ناقص: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB."
+                        f"دانلود ناقص است: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB."
                     )
             else:
                 raise RuntimeError("فایل ذخیره نشد.")
@@ -473,7 +478,7 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. دانلود با اعتبارسنجی
+        # ۱. دریافت کامل فایل
         await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
@@ -481,7 +486,7 @@ async def process_job(job: dict):
 
         gc.collect()
 
-        # ۲. فشرده‌سازی کم‌مصرف FFmpeg
+        # ۲. پردازش و فشرده‌سازی با FFmpeg
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -498,10 +503,6 @@ async def process_job(job: dict):
 
         if mode == "mp3":
             cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", output_path]
-        elif mode == "gif":
-            vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-            vf += ["fps=15", "scale=480:-2:flags=fast_bilinear"]
-            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
         else:
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
@@ -584,7 +585,7 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. دریافت مشخصات زمان و ابعاد
+        # ۳. دریافت متادیتا
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -593,7 +594,7 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. آپلود ترتیبی بدون ددلاک
+        # ۴. آپلود ترتیبی بدون فریز و ارور
         ui_state["action"] = "upload"
         ui_state["percent"] = 0.0
 
@@ -610,17 +611,6 @@ async def process_job(job: dict):
                 audio=output_path,
                 duration=out_dur,
                 caption=caption,
-                progress=pyro_progress,
-                progress_args=(ui_state,)
-            )
-        elif mode == "gif":
-            await pyro.send_animation(
-                chat_id=chat_id,
-                animation=output_path,
-                duration=out_dur,
-                width=out_w,
-                height=out_h,
-                unsave=True,
                 progress=pyro_progress,
                 progress_args=(ui_state,)
             )
