@@ -40,17 +40,33 @@ pyro = PyroClient(
     ipv6=False
 )
 
-# --- موتور آپلود پایدار ترتیبی برای جلوگیری از ددلاک ۰.۳٪ ---
+# --- موتور آپلود پایدار ترتیبی با پشتیبانی از None و انواع فایل ---
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
-    file_size = os.path.getsize(path)
+    if not path:
+        return None
+
+    if isinstance(path, (str, bytes, os.PathLike)):
+        file_size = os.path.getsize(path)
+        file_name = os.path.basename(path)
+        fp = open(path, "rb")
+        should_close = True
+    else:
+        fp = path
+        file_name = getattr(fp, "name", "file.bin")
+        curr_pos = fp.tell()
+        fp.seek(0, os.SEEK_END)
+        file_size = fp.tell()
+        fp.seek(curr_pos)
+        should_close = False
+
     part_size = 512 * 1024
-    total_parts = math.ceil(file_size / part_size)
+    total_parts = math.ceil(file_size / part_size) if file_size > 0 else 1
     fid = file_id or random.randint(1, (1 << 63) - 1)
     is_big = file_size > 10 * 1024 * 1024
 
-    with open(path, "rb") as f:
+    try:
         for part_index in range(total_parts):
-            chunk = f.read(part_size)
+            chunk = fp.read(part_size)
             if not chunk:
                 break
             if is_big:
@@ -79,14 +95,15 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                         await res
                 except Exception:
                     pass
+    finally:
+        if should_close:
+            fp.close()
 
-    file_name = os.path.basename(path)
     if is_big:
         return raw.types.InputFileBig(id=fid, parts=total_parts, name=file_name)
     else:
         return raw.types.InputFile(id=fid, parts=total_parts, name=file_name, md5_checksum="")
 
-# جایگزینی متد آپلود هسته پایروگرام
 pyro.save_file = types.MethodType(custom_save_file, pyro)
 
 DOWNLOAD_DIR = "downloads"
@@ -456,7 +473,7 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. دانلود فایل
+        # ۱. دانلود با اعتبارسنجی
         await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
@@ -567,7 +584,7 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. دریافت متادیتا برای نمایش درست تایمر در تلگرام
+        # ۳. دریافت مشخصات زمان و ابعاد
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -576,7 +593,7 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. آپلود با استریم ترتیبی Pyrogram
+        # ۴. آپلود ترتیبی بدون ددلاک
         ui_state["action"] = "upload"
         ui_state["percent"] = 0.0
 
@@ -641,7 +658,7 @@ async def main():
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram متصل شد.")
+        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
     except Exception as e:
         logging.error(f"خطای شروع Pyrogram: {e}")
 
