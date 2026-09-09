@@ -67,7 +67,7 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
-# --- سیستم ذخیره‌سازی دوگانه (دیتابیس + فایل بکاپ) ---
+# --- سیستم ذخیره‌سازی محلی پشتیبان ---
 def load_backup_stats() -> dict:
     if os.path.exists(BACKUP_STATS_FILE):
         try:
@@ -86,10 +86,11 @@ def save_backup_stats(stats: dict):
         logging.warning(f"Backup save error: {e}")
 
 
+# --- دیتابیس PostgreSQL ---
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
-        logging.warning("⚠️ متغیر DATABASE_URL تنظیم نشده؛ از ذخیره‌ساز محلی استفاده می‌شود.")
+        logging.warning("⚠️ متغیر DATABASE_URL تنظیم نشده؛ از فایل محلی استفاده می‌شود.")
         return
 
     try:
@@ -135,9 +136,9 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-        logging.info("✅ اتصال به پایگاه داده با موفقیت انجام شد.")
+        logging.info("✅ دیتابیس متصل شد.")
     except Exception as e:
-        logging.error(f"❌ خطا در اتصال به دیتابیس PostgreSQL: {e}")
+        logging.error(f"❌ خطا در اتصال به دیتابیس: {e}")
 
 
 async def get_daily_limit_mb() -> int:
@@ -202,7 +203,6 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
     today = datetime.date.today()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # ۱. ذخیره مستقیم در PostgreSQL
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as conn:
@@ -242,7 +242,6 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
         except Exception as e:
             logging.error(f"DB insert error: {e}")
 
-    # ۲. ذخیره پشتیبان
     stats = load_backup_stats()
     if "users" not in stats:
         stats["users"] = {}
@@ -433,6 +432,7 @@ def get_cpu_seconds() -> float:
     return ru.user + ru.system + ru.children_user + ru.children_system
 
 
+# --- مدیریت کش تنظیمات و تنظیمات دیفالت کاربر ---
 def init_prefs_cache():
     global PREFS_CACHE
     if os.path.exists(PREFS_FILE):
@@ -460,6 +460,29 @@ def set_user_show_details(user_id: int, show_details: bool):
     if u_key not in PREFS_CACHE:
         PREFS_CACHE[u_key] = {}
     PREFS_CACHE[u_key]["show_details"] = show_details
+    save_prefs()
+
+
+def get_user_default_cfg(user_id: int) -> dict:
+    base = {
+        "mode": "video",
+        "res": "720",
+        "codec": "h264",
+        "crf": "medium",
+        "mute": False,
+        "speed": "1.0",
+        "fmt": "orig"
+    }
+    user_saved = PREFS_CACHE.get(str(user_id), {}).get("default_cfg", {})
+    base.update(user_saved)
+    return base
+
+
+def set_user_default_cfg(user_id: int, cfg: dict):
+    u_key = str(user_id)
+    if u_key not in PREFS_CACHE:
+        PREFS_CACHE[u_key] = {}
+    PREFS_CACHE[u_key]["default_cfg"] = cfg
     save_prefs()
 
 
@@ -556,7 +579,7 @@ RUNNING_TASKS = {}
 
 def get_main_reply_keyboard(user_id: int):
     builder = ReplyKeyboardBuilder()
-    builder.button(text="⚙️ تنظیمات گزارش")
+    builder.button(text="⚙️ تنظیمات")
     builder.button(text="📞 ارتباط با پشتیبانی")
     if user_id == ADMIN_ID:
         builder.button(text="👑 پنل مدیریت")
@@ -569,10 +592,11 @@ def get_main_reply_keyboard(user_id: int):
 def get_settings_inline_keyboard(user_id: int):
     show_details = get_user_show_details(user_id)
     builder = InlineKeyboardBuilder()
-    toggle_text = "حالت فعلی: گزارش کامل با مشخصات ✅" if show_details else "حالت فعلی: فقط حجم فایل‌ها 📉"
+    toggle_text = "گزارش خروجی: کامل با مشخصات ✅" if show_details else "گزارش خروجی: فقط حجم فایل‌ها 📉"
     action_text = "تغییر به: گزارش ساده" if show_details else "تغییر به: گزارش کامل"
     builder.button(text=toggle_text, callback_data="none")
     builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
+    builder.button(text="🎬 تنظیمات دیفالت ویدیوها", callback_data="open_default_settings")
     builder.button(text="بستن منو ❌", callback_data="close_settings")
     builder.adjust(1)
     return builder.as_markup()
@@ -608,6 +632,7 @@ def decode_cfg(data_str):
     }
 
 
+# کیبورد تبدیل ویدیو (با دکمه عریض تکی برای فرمت اصلی)
 def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
@@ -617,7 +642,8 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b.button(text="🎵 استخراج صدا (موزیک)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
-        b.button(text=f"فرمت: اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
+        # دکمه بزرگ عریض به صورت تکی در یک سطر کامل مثل دکمه صدا
+        b.button(text=f"📁 فرمت خروجی: همانند فایل اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
         b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
         b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
@@ -643,9 +669,50 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b.button(text="❌ پشیمون شدم (لغو)", callback_data="cancel_panel")
 
     if mode == "video":
-        b.adjust(2, 4, 4, 2, 3, 1, 3, 2)
+        b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 2)
     else:
         b.adjust(2, 3, 2, 3, 2)
+    return b.as_markup()
+
+
+# کیبورد مخصوص ذخیره تنظیمات دیفالت ویدیو
+def build_default_config_keyboard(cfg: dict):
+    b = InlineKeyboardBuilder()
+    mode = cfg["mode"]
+    res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
+
+    b.button(text="🎬 تبدیل ویدیو" + (" ✅" if mode == "video" else ""), callback_data="defcfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎵 استخراج صدا" + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
+
+    if mode == "video":
+        b.button(text="📁 فرمت خروجی: همانند فایل اصلی" + (" ✅" if fmt == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
+        b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
+        b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
+        b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
+
+        for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
+            b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="defcfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
+
+        b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
+        b.button(text="H.265 (فوق‌العاده کم‌حجم)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
+
+        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (سبک)")]:
+            b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
+
+        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
+    else:
+        for af_k, af_t in [("mp3", "MP3"), ("wav", "WAV (اورجینال)"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
+            b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
+
+    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
+        b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
+
+    b.button(text="🔙 بازگشت به منوی تنظیمات", callback_data="back_to_settings")
+
+    if mode == "video":
+        b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 1)
+    else:
+        b.adjust(2, 3, 2, 3, 1)
     return b.as_markup()
 
 
@@ -707,14 +774,14 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     await register_user(u.id, u.full_name or "", u.username or "")
 
     builder = InlineKeyboardBuilder()
-    builder.button(text="⚙️ تنظیمات گزارش", callback_data="open_settings")
+    builder.button(text="⚙️ تنظیمات", callback_data="open_settings")
     builder.button(text="📞 ارتباط با پشتیبانی", callback_data="start_support")
     builder.adjust(2)
 
     welcome_text = (
         "سلام رفیق! خیلی خوش اومدی 👋✨\n\n"
         "🎬 هر ویدیویی داری همینجا بفرست تا با بالاترین سرعت و بهترین کیفیت برات کم‌حجم یا تبدیلش کنم (مستقیم تا سقف ۳۰۰ مگابایت).\n\n"
-        "از دکمه‌های پایین هم می‌تونی ظاهر گزارش رو تنظیم کنی یا به پشتیبانی پیام بدی 👇"
+        "از دکمه‌های پایین هم می‌تونی تنظیمات دلخواهت رو بچینی یا با پشتیبانی در ارتباط باشی 👇"
     )
     await message.answer(welcome_text, reply_markup=get_main_reply_keyboard(message.from_user.id))
     await message.answer("📌 دسترسی سریع:", reply_markup=builder.as_markup())
@@ -850,7 +917,6 @@ async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"⚠️ ارسال فایل به مشکل خورد:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-# ارسال ویدیوی درخواستی کاربر به ادمین (در دکمه بررسی لحظه‌ای)
 @dp.callback_query(F.data.startswith("req_vid:"))
 async def send_requested_video_to_admin(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -1106,8 +1172,8 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     await callback.message.edit_text("❌ عملیات لغو شد.")
 
 
-# --- تنظیمات نمایش گزارش ---
-@dp.message(F.text == "⚙️ تنظیمات گزارش")
+# --- منوی تنظیمات و بخش تنظیمات دیفالت ویدیو ---
+@dp.message(F.text == "⚙️ تنظیمات")
 @dp.callback_query(F.data == "open_settings")
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
     user_id = event.from_user.id
@@ -1115,9 +1181,9 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
     await register_user(user_id, u.full_name or "", u.username or "")
 
     text = (
-        "⚙️ <b>نحوه نمایش گزارش بعد از آماده شدن ویدیو:</b>\n\n"
-        "▫️ <b>گزارش کامل:</b> شامل جزییات کیفیت، کدک، فشرده‌سازی، صدا و سرعت.\n"
-        "▫️ <b>گزارش ساده:</b> صرفاً حجم اولیه، خروجی و درصد کاهش حجم."
+        "⚙️ <b>تنظیمات ربات:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "از این بخش می‌تونی نحوه نمایش گزارش و تنظیمات دیفالت ویدیوها رو تعیین کنی 👇"
     )
     kb = get_settings_inline_keyboard(user_id)
     if isinstance(event, aiotypes.CallbackQuery):
@@ -1132,11 +1198,62 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     current_status = get_user_show_details(user_id)
     set_user_show_details(user_id, not current_status)
-    await callback.answer("تنظیمات تغییر کرد!")
+    await callback.answer("تنظیمات گزارش تغییر کرد!")
     try:
         await callback.message.edit_reply_markup(reply_markup=get_settings_inline_keyboard(user_id))
     except TelegramBadRequest:
         pass
+
+
+@dp.callback_query(F.data == "open_default_settings")
+async def show_default_settings(callback: aiotypes.CallbackQuery):
+    user_id = callback.from_user.id
+    user_cfg = get_user_default_cfg(user_id)
+    text = (
+        "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "هر تنظیمی رو اینجا انتخاب کنی، از این به بعد وقتی ویدیو بفرستی به صورت خودکار روی همین تنظیمات آماده میشه (مثلاً کدک H.265 یا کیفیت دلخواهت).\n\n"
+        "💡 <i>روی هر دکمه بزنی، همون لحظه خودکار ذخیره میشه رفیق.</i>"
+    )
+    await callback.answer()
+    await callback.message.edit_text(
+        text,
+        reply_markup=build_default_config_keyboard(user_cfg),
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("defcfg:"))
+async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
+    cfg = decode_cfg(callback.data[7:])
+    set_user_default_cfg(callback.from_user.id, cfg)
+    await callback.answer("✅ به عنوان تنظیمات پیش‌فرض ذخیره شد.")
+    text = (
+        "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "هر تنظیمی رو اینجا انتخاب کنی، از این به بعد وقتی ویدیو بفرستی به صورت خودکار روی همین تنظیمات آماده میشه (مثلاً کدک H.265 یا کیفیت دلخواهت).\n\n"
+        "💡 <i>روی هر دکمه بزنی، همون لحظه خودکار ذخیره میشه رفیق.</i>"
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=build_default_config_keyboard(cfg))
+    except TelegramBadRequest:
+        pass
+
+
+@dp.callback_query(F.data == "back_to_settings")
+async def back_to_settings_menu(callback: aiotypes.CallbackQuery):
+    user_id = callback.from_user.id
+    text = (
+        "⚙️ <b>تنظیمات ربات:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "از این بخش می‌تونی نحوه نمایش گزارش و تنظیمات دیفالت ویدیوها رو تعیین کنی 👇"
+    )
+    await callback.answer()
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_settings_inline_keyboard(user_id),
+        parse_mode="HTML"
+    )
 
 
 @dp.callback_query(F.data == "close_settings")
@@ -1310,7 +1427,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و شروع پردازش ---
+# --- دریافت ویدیو و شروع پردازش با تنظیمات دیفالت کاربر ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1325,7 +1442,6 @@ async def handle_video(message: aiotypes.Message):
     if not video:
         return await message.answer("⚠️ رفیق لطفاً یک فایل ویدیویی بفرست!")
 
-    # محدودیت فایل ۳۰۰ مگابایت به بالا
     if video.file_size > MAX_FILE_SIZE and message.from_user.id != ADMIN_ID:
         support_kb = InlineKeyboardBuilder()
         support_kb.button(text="📞 پیام به پشتیبانی", callback_data="start_support")
@@ -1350,15 +1466,10 @@ async def handle_video(message: aiotypes.Message):
         )
 
     orig_ext = detect_file_extension(message)
-    default_cfg = {
-        "mode": "video",
-        "res": "720",
-        "codec": "h264",
-        "crf": "medium",
-        "mute": False,
-        "speed": "1.0",
-        "fmt": "orig"
-    }
+    # دریافت تنظیمات پیش‌فرض اختصاصی کاربر
+    user_default_cfg = get_user_default_cfg(message.from_user.id)
+    default_cfg = dict(user_default_cfg)
+
     await message.reply(
         f"⚙️ <b>تنظیمات تبدیل ویدیو:</b>\n▫️ فرمت فایل ورودی: <b>{orig_ext.upper()}</b>\n\nهر جوری دوست داری تنظیمش کن و دکمه شروع رو بزن 👇",
         reply_markup=build_config_keyboard(default_cfg, orig_ext=orig_ext),
@@ -1437,7 +1548,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "name": user_name
     }
 
-    # دریافت هزینه تا الان کاربر و ارسال اعلان تمیز برای ادمین
+    # دریافت کل هزینه کاربر تا الان و ارسال اعلان به ادمین
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
         total_user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
@@ -1456,7 +1567,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
             f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
             f"📦 <b>حجم فایل:</b> {file_size_mb:.2f} مگابایت\n"
             f"⚙️ <b>تنظیمات:</b> <code>{cfg['mode']} | {cfg['res']} | {cfg['codec']}</code>\n"
-            f"💵 <b>کل هزینه این کاربر تا الان:</b> <code>${total_user_cost:.4f}</code>\n"
+            f"💵 <b>کل هزینه کاربر تا الان:</b> <code>${total_user_cost:.4f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💡 <i>برای دیدن ویدیوی ارسالی کاربر، دکمه زیر رو بزن:</i>"
         )
@@ -1782,7 +1893,6 @@ async def process_job(job: dict):
             elif v_codec == "libx265":
                 cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0"]
 
-            # کپی مستقیم صدا
             if cfg["mute"]:
                 cmd += ["-an"]
             elif speed_factor != 1.0:
@@ -1951,7 +2061,7 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
-        # ذخیره آمار در دیتابیس
+        # ثبت هزینه در دیتابیس
         await record_job_stats(
             user_id=user_id,
             name=user_name,
@@ -1961,8 +2071,11 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
-        # ارسال پیام اعلام هزینه نهایی برای ادمین
+        # ارسال پیام اعلام پایان تبدیل و هزینه دقیق برای ادمین
         if user_id != ADMIN_ID:
+            u_stat_now = await get_user_stat(user_id)
+            new_total_cost = float(u_stat_now.get("total_cost") or 0.0) if u_stat_now else exact_cost
+
             try:
                 await bot.send_message(
                     chat_id=ADMIN_ID,
@@ -1971,7 +2084,8 @@ async def process_job(job: dict):
                         f"━━━━━━━━━━━━━━━━━━\n"
                         f"👤 <b>کاربر:</b> {html.escape(user_name)} (<code>{user_id}</code>)\n"
                         f"💵 <b>هزینه واقعی این تبدیل:</b> <code>${exact_cost:.5f}</code>\n"
-                        f"📦 <b>حجم خروجی:</b> {final_size / (1024*1024):.2f} مگابایت"
+                        f"💳 <b>مجموع هزینه کاربر تا الان:</b> <code>${new_total_cost:.4f}</code>\n"
+                        f"📦 <b>حجم خروجی فایل:</b> {final_size / (1024*1024):.2f} مگابایت"
                     ),
                     parse_mode="HTML"
                 )
@@ -2001,7 +2115,7 @@ async def main():
         logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
+    logging.info("✅ ربات آنلاین است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
