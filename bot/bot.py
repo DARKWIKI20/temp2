@@ -1,4 +1,5 @@
 import os
+import gc
 import re
 import json
 import asyncio
@@ -127,7 +128,7 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
             "-ss", ss_time,
             "-i", video_path,
             "-vframes", "1",
-            "-vf", "scale=320:-1",
+            "-vf", "scale=320:-1:flags=fast_bilinear",
             thumb_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -244,7 +245,6 @@ async def queue_worker():
             tb = traceback.format_exc()
             logging.error(f"Job {job_id} error:\n{tb}")
 
-            # تمیز کردن لاگ و استخراج خطوط اصلی خطا
             tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
             clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
 
@@ -320,7 +320,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
             logging.info(f"Retrying download for {job['job_id']} (Attempt {attempt}/{max_retries})...")
             try:
                 await job["status_msg"].edit_text(
-                    f"🔄 قطع موقت ارتباط! در حال تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...\n"
+                    f"🔄 در حال تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...\n"
                     f"لطفاً صبور باشید.",
                     reply_markup=get_cancel_keyboard(job["job_id"])
                 )
@@ -335,9 +335,8 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
             else:
                 msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
                 if not msg or msg.empty:
-                    raise RuntimeError(f"پیام مرجع ویدیو (ID: {job['msg_id']}) در تلگرام بازخوانی نشد.")
+                    raise RuntimeError(f"پیام ویدیو در تلگرام بازخوانی نشد.")
 
-                # دریافت استریمی برای دور زدن باگ توقف ۱ مگابایتی
                 try:
                     with open(input_path, "wb") as f:
                         curr_bytes = 0
@@ -348,8 +347,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                             curr_bytes += len(chunk)
                             if initial_size > 0:
                                 ui_state["percent"] = min(99.0, (curr_bytes / initial_size) * 100.0)
-                except Exception as stream_err:
-                    logging.warning(f"stream_media failed ({stream_err}), trying standard download_media...")
+                except Exception:
                     await pyro.download_media(
                         msg,
                         file_name=input_path,
@@ -364,17 +362,17 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     return
                 else:
                     raise RuntimeError(
-                        f"فایل ناقص است: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB دانلود شد."
+                        f"دانلود ناقص است: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB."
                     )
             else:
-                raise RuntimeError("فایل دانلودشده پس از عملیات ذخیره نشد.")
+                raise RuntimeError("فایل پس از دانلود ذخیره نشد.")
 
         except Exception as e:
             last_err = e
             logging.warning(f"Download attempt {attempt} error: {e}")
             await asyncio.sleep(2)
 
-    raise RuntimeError(f"دانلود فایل پس از {max_retries} بار تلاش متوالی متوقف شد:\n{last_err}")
+    raise RuntimeError(f"دانلود فایل متوقف شد:\n{last_err}")
 
 
 async def process_job(job: dict):
@@ -401,13 +399,16 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. اجرای دانلود با مکانیزم تلاش مجدد خودکار
+        # ۱. دانلود با اعتبارسنجی
         await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. پیکربندی و اجرای فشرده‌سازی با FFmpeg
+        # آزادسازی حافظه رم قبل از لود FFmpeg
+        gc.collect()
+
+        # ۲. پیکربندی کم‌مصرف FFmpeg (جلوگیری قطعی از خطای OOM -9)
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -417,21 +418,21 @@ async def process_job(job: dict):
 
         cmd = [
             FFMPEG_BIN, "-y",
-            "-threads", "2",
+            "-threads", "1",
             "-i", input_path,
-            "-max_muxing_queue_size", "2048"
+            "-max_muxing_queue_size", "1024"
         ]
 
         if mode == "mp3":
             cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", output_path]
         elif mode == "gif":
             vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-            vf += ["fps=15", "scale=480:-2:flags=lanczos"]
-            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
+            vf += ["fps=15", "scale=480:-2:flags=fast_bilinear"]
+            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
         else:
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
-            scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if cfg["res"] == "orig" else f"scale=-2:{cfg['res']}:flags=lanczos"
+            scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if cfg["res"] == "orig" else f"scale=-2:{cfg['res']}:flags=fast_bilinear"
             vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
             vf.append(scale)
             
@@ -440,9 +441,16 @@ async def process_job(job: dict):
                 "-c:v", v_codec,
                 "-vf", ",".join(vf),
                 "-crf", crf_map.get(cfg["crf"], "28"),
-                "-preset", "veryfast",
+                "-preset", "ultrafast",
                 "-pix_fmt", "yuv420p"
             ]
+
+            # پارامترهای کنترل سقف مصرف رم برای هر دو کدک
+            if v_codec == "libx264":
+                cmd += ["-x264opts", "rc-lookahead=10:sync-lookahead=0:bframes=2"]
+            elif v_codec == "libx265":
+                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=5:bframes=2"]
+
             if cfg["mute"]:
                 cmd += ["-an"]
             else:
@@ -504,7 +512,7 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. دریافت ابعاد و مشخصات زمان برای جلوگیری از تایم 00:00
+        # ۳. دریافت ابعاد و زمان برای رفع خطای 00:00
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -579,12 +587,12 @@ async def main():
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
+        logging.info("✅ کلاینت Pyrogram متصل شد.")
     except Exception as e:
         logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
+    logging.info("✅ ربات آنلاین و آماده است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
