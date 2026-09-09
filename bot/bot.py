@@ -292,33 +292,46 @@ async def process_job(job: dict):
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. پیکربندی بهینه FFmpeg (مصرف حداقل رم)
+        # ۲. پیکربندی بهینه FFmpeg (مصرف حداقل رم برای ویدیوهای سنگین)
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
         duration = await get_video_duration(input_path)
         eff_duration = duration / speed_factor if speed_factor > 0 else duration
 
-        # محدود کردن به ۱ تا ۲ ترد برای پیشگیری قطعی از کرش رم سرور
-        cmd = [FFMPEG_BIN, "-y", "-i", input_path, "-threads", "2", "-max_muxing_queue_size", "512"]
+        cmd = [
+            FFMPEG_BIN, "-y",
+            "-threads", "1",
+            "-i", input_path,
+            "-max_muxing_queue_size", "2048"
+        ]
 
         if mode == "mp3":
             cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", output_path]
         elif mode == "gif":
             vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
             vf += ["fps=15", "scale=480:-2:flags=lanczos"]
-            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
+            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
         else:
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
             scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if cfg["res"] == "orig" else f"scale=-2:{cfg['res']}:flags=lanczos"
             vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
             vf.append(scale)
-            cmd += ["-map", "0:v:0", "-c:v", v_codec, "-vf", ",".join(vf), "-crf", crf_map.get(cfg["crf"], "28"), "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+            
+            cmd += [
+                "-map", "0:v:0",
+                "-c:v", v_codec,
+                "-vf", ",".join(vf),
+                "-crf", crf_map.get(cfg["crf"], "28"),
+                "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart"
+            ]
             if cfg["mute"]:
                 cmd += ["-an"]
             else:
-                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-strict", "experimental"]
+                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-async", "1"]
                 if speed_factor != 1.0:
                     cmd += ["-filter:a", f"atempo={speed_factor}"]
             cmd += ["-progress", "pipe:2", output_path]
@@ -328,19 +341,26 @@ async def process_job(job: dict):
 
         time_us_pattern = re.compile(r"out_time_us=(\d+)")
         time_str_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+        last_error_lines = []
 
         while True:
             line = await proc.stderr.readline()
             if not line:
                 break
             if ACTIVE_PROCESSES[job_id]["cancelled"]:
-                try: proc.kill()
-                except Exception: pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
                 return
 
             line_str = line.decode(errors="ignore").strip()
-            current_secs = None
+            if line_str:
+                last_error_lines.append(line_str)
+                if len(last_error_lines) > 5:
+                    last_error_lines.pop(0)
 
+            current_secs = None
             match_us = time_us_pattern.search(line_str)
             if match_us:
                 current_secs = float(match_us.group(1)) / 1_000_000.0
@@ -360,7 +380,8 @@ async def process_job(job: dict):
             return
 
         if proc.returncode != 0 or not os.path.exists(output_path):
-            raise RuntimeError(f"خطای پردازشگر کد: {proc.returncode}")
+            err_details = "\n".join(last_error_lines[-3:]) if last_error_lines else "ناشناخته"
+            raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n`{err_details}`")
 
         # ۳. ارسال به تلگرام
         ui_state["action"] = "upload"
