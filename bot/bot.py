@@ -37,6 +37,26 @@ MAX_FILE_SIZE = 300 * 1024 * 1024  # سقف ۳۰۰ مگابایت
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
 
+# ۱۶ عبارت خودمونی برای دکمه شروع پردازش ویدیو
+START_PHRASES = [
+    "بزن نریم",
+    "باشه بسته شو دیگه",
+    "حله خداحافظ",
+    "باشه",
+    "اوکی دوکی",
+    "خیلی ممنون",
+    "بسته شو",
+    "تنظیم کن",
+    "حله داداش",
+    "کاری ندارم دیگه",
+    "همین خوبه",
+    "ایول",
+    "بسته شود بلکه پسندیده شود",
+    "ترو خدا همین رو ذخیره کن",
+    "حله فدات",
+    "دمت گرم"
+]
+
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
@@ -597,7 +617,7 @@ def get_settings_inline_keyboard(user_id: int):
     builder.button(text=toggle_text, callback_data="none")
     builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
     builder.button(text="🎬 تنظیمات دیفالت ویدیوها", callback_data="open_default_settings")
-    builder.button(text="بستن منو ❌", callback_data="close_settings")
+    builder.button(text="پشیمون شدم", callback_data="close_settings")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -608,7 +628,7 @@ def get_admin_panel_keyboard():
     builder.button(text="⏱ سهمیه مصرف روزانه", callback_data="admin_set_limit")
     builder.button(text="📢 پیام همگانی به همه", callback_data="admin_broadcast")
     builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
-    builder.button(text="❌ بستن منو", callback_data="admin_close")
+    builder.button(text="پشیمون شدم", callback_data="admin_close")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -632,7 +652,7 @@ def decode_cfg(data_str):
     }
 
 
-# کیبورد تبدیل ویدیو (با دکمه عریض تکی برای فرمت اصلی)
+# کیبورد تبدیل ویدیو (دکمه عریض با کلمه «مثل» + دکمه شروع با متن تصادفی از عبارات انتخابی)
 def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
@@ -642,8 +662,8 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b.button(text="🎵 استخراج صدا (موزیک)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
-        # دکمه بزرگ عریض به صورت تکی در یک سطر کامل مثل دکمه صدا
-        b.button(text=f"📁 فرمت خروجی: همانند فایل اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
+        # دکمه بزرگ عریض به صورت تکی در یک سطر کامل با کلمه «مثل»
+        b.button(text=f"📁 فرمت خروجی: مثل فایل اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
         b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
         b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
@@ -665,8 +685,10 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
-    b.button(text="🚀 بزن بریم (شروع تبدیل)", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
-    b.button(text="❌ پشیمون شدم (لغو)", callback_data="cancel_panel")
+    # دکمه شروع پردازش با انتخاب رندوم از ۱۶ عبارت درخواستی
+    start_phrase = random.choice(START_PHRASES)
+    b.button(text=f"🚀 {start_phrase}", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
+    b.button(text="پشیمون شدم", callback_data="cancel_panel")
 
     if mode == "video":
         b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 2)
@@ -675,7 +697,7 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     return b.as_markup()
 
 
-# کیبورد مخصوص ذخیره تنظیمات دیفالت ویدیو
+# کیبورد پیش‌فرض ویدیوها با دکمه عریض و کلمه «مثل»
 def build_default_config_keyboard(cfg: dict):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
@@ -685,7 +707,7 @@ def build_default_config_keyboard(cfg: dict):
     b.button(text="🎵 استخراج صدا" + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
-        b.button(text="📁 فرمت خروجی: همانند فایل اصلی" + (" ✅" if fmt == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
+        b.button(text="📁 فرمت خروجی: مثل فایل اصلی" + (" ✅" if fmt == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
         b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
         b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
@@ -707,7 +729,7 @@ def build_default_config_keyboard(cfg: dict):
     for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
-    b.button(text="🔙 بازگشت به منوی تنظیمات", callback_data="back_to_settings")
+    b.button(text="🔙 بازگشت به تنظیمات", callback_data="back_to_settings")
 
     if mode == "video":
         b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 1)
@@ -718,7 +740,7 @@ def build_default_config_keyboard(cfg: dict):
 
 def get_cancel_keyboard(job_id: str):
     b = InlineKeyboardBuilder()
-    b.button(text="❌ لغو پردازش", callback_data=f"stop:{job_id}")
+    b.button(text="پشیمون شدم", callback_data=f"stop:{job_id}")
     return b.as_markup()
 
 
@@ -779,7 +801,7 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     builder.adjust(2)
 
     welcome_text = (
-        "سلام رفیق! خیلی خوش اومدی 👋✨\n\n"
+        "سلام خوشتیپ خوش اومدی\n\n"
         "🎬 هر ویدیویی داری همینجا بفرست تا با بالاترین سرعت و بهترین کیفیت برات کم‌حجم یا تبدیلش کنم (مستقیم تا سقف ۳۰۰ مگابایت).\n\n"
         "از دکمه‌های پایین هم می‌تونی تنظیمات دلخواهت رو بچینی یا با پشتیبانی در ارتباط باشی 👇"
     )
@@ -986,7 +1008,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
         return
     await callback.answer()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         "✏️ عدد سقف مصرف روزانه رو به <b>مگابایت (MB)</b> بفرست (مثال: <code>400</code> یا برای نامحدود <code>0</code>):",
@@ -1036,7 +1058,7 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
     await callback.answer()
     users = await get_all_user_ids()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         f"⚠️ <b>پیام همگانی:</b>\nاین پیامی که می‌فرستی برای همه ({len(users)} نفر) ارسال میشه.\n\n"
@@ -1078,7 +1100,7 @@ async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMCon
         return
     await callback.answer()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         "👤 لطفاً <b>آیدی عددی</b> کاربر رو بفرست:",
@@ -1097,7 +1119,7 @@ async def quick_reply_to_user(callback: aiotypes.CallbackQuery, state: FSMContex
     await state.update_data(target_id=target_id, user_name="کاربر", username="")
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         f"✉️ هر پاسخی که می‌خوای برای کاربر <code>{target_id}</code> بره رو همینجا بنویس و بفرست:",
@@ -1132,7 +1154,7 @@ async def process_user_id_input(message: aiotypes.Message, state: FSMContext):
     await state.update_data(target_id=target_id, user_name=user_name, username=username)
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="❌ انصراف", callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     confirm_text = (
         f"🎯 <b>مشخصات کاربر پیدا شد:</b>\n\n"
@@ -1168,8 +1190,8 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     if callback.from_user.id != ADMIN_ID:
         return
     await state.clear()
-    await callback.answer("عملیات لغو شد.")
-    await callback.message.edit_text("❌ عملیات لغو شد.")
+    await callback.answer("لغو شد.")
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 # --- منوی تنظیمات و بخش تنظیمات دیفالت ویدیو ---
@@ -1227,7 +1249,7 @@ async def show_default_settings(callback: aiotypes.CallbackQuery):
 async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
     cfg = decode_cfg(callback.data[7:])
     set_user_default_cfg(callback.from_user.id, cfg)
-    await callback.answer("✅ به عنوان تنظیمات پیش‌فرض ذخیره شد.")
+    await callback.answer("✅ ذخیره شد!")
     text = (
         "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -1275,7 +1297,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
     await register_user(u.id, u.full_name or "", u.username or "")
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="❌ انصراف", callback_data="cancel_support")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_support")
 
     msg_text = "✍️ هر سوال، مشکل یا پیامی داری همینجا بنویس و بفرست (متن، عکس، ویس و...):"
     if isinstance(event, aiotypes.CallbackQuery):
@@ -1291,7 +1313,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
 async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("لغو شد.")
-    await callback.message.edit_text("❌ ارسال پیام به پشتیبانی لغو شد.")
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 @dp.message(SupportState.waiting_for_message)
@@ -1410,7 +1432,7 @@ async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
     await callback.answer("لغو شد.")
-    await callback.message.edit_text("👌 حله، ویدیو ارسال نشد.")
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 def detect_file_extension(message: aiotypes.Message) -> str:
@@ -1466,7 +1488,6 @@ async def handle_video(message: aiotypes.Message):
         )
 
     orig_ext = detect_file_extension(message)
-    # دریافت تنظیمات پیش‌فرض اختصاصی کاربر
     user_default_cfg = get_user_default_cfg(message.from_user.id)
     default_cfg = dict(user_default_cfg)
 
@@ -1491,7 +1512,7 @@ async def update_settings(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data == "cancel_panel")
 async def cancel_panel(callback: aiotypes.CallbackQuery):
-    await callback.message.edit_text("❌ عملیات لغو شد.")
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 @dp.callback_query(F.data.startswith("stop:"))
@@ -1548,7 +1569,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "name": user_name
     }
 
-    # دریافت کل هزینه کاربر تا الان و ارسال اعلان به ادمین
+    # ارسال اعلان تمیز برای ادمین
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
         total_user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
@@ -1652,7 +1673,7 @@ async def queue_worker():
 
             err_kb = InlineKeyboardBuilder()
             err_kb.button(text="بله، ویدیو هم فرستاده بشه ✅", callback_data=f"err_send_vid:{job_id}")
-            err_kb.button(text="نه، لازم نیست ❌", callback_data=f"err_cancel_vid:{job_id}")
+            err_kb.button(text="پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
             err_kb.adjust(1)
 
             user_notice = (
@@ -1893,6 +1914,7 @@ async def process_job(job: dict):
             elif v_codec == "libx265":
                 cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0"]
 
+            # کپی مستقیم صدا
             if cfg["mute"]:
                 cmd += ["-an"]
             elif speed_factor != 1.0:
@@ -2061,7 +2083,7 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
-        # ثبت هزینه در دیتابیس
+        # ذخیره آمار در دیتابیس
         await record_job_stats(
             user_id=user_id,
             name=user_name,
@@ -2115,7 +2137,7 @@ async def main():
         logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین است.")
+    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
