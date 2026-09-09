@@ -45,13 +45,14 @@ pyro = PyroClient(
 )
 
 SUPPORT_MAP = {}
+FAILED_JOBS = {}
 
 
 class SupportState(StatesGroup):
     waiting_for_message = State()
 
 
-# مدیریت ذخیره پایدار تنظیمات کاربران
+# مدیریت تنظیمات نمایش کاربران
 def load_prefs() -> dict:
     if os.path.exists(PREFS_FILE):
         try:
@@ -324,7 +325,7 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     current_status = get_user_show_details(user_id)
     set_user_show_details(user_id, not current_status)
-    await callback.answer("تنظیمات با موفقیت به‌روزرسانی شد.")
+    await callback.answer("تنظیمات به‌روزرسانی شد.")
     try:
         await callback.message.edit_reply_markup(reply_markup=get_settings_inline_keyboard(user_id))
     except TelegramBadRequest:
@@ -424,6 +425,48 @@ async def handle_admin_reply(message: aiotypes.Message):
     except Exception as e:
         logging.error(f"Failed to send admin reply: {e}")
         await message.reply(f"⚠️ ارسال پاسخ با خطا مواجه شد:\n`{e}`")
+
+
+# --- دریافت تصمیم کاربر برای ارسال ویدیو هنگام بروز خطا ---
+@dp.callback_query(F.data.startswith("err_send_vid:"))
+async def handle_send_error_video(callback: aiotypes.CallbackQuery):
+    job_id = callback.data.split(":", 1)[1]
+    failed_job = FAILED_JOBS.pop(job_id, None)
+
+    if not failed_job:
+        await callback.answer("مهلت ارسال این ویدیو گذشته است.", show_alert=True)
+        return await callback.message.edit_text("❌ مهلت ارسال ویدیوی این خطا به پایان رسیده است.")
+
+    await callback.answer("در حال ارسال ویدیو برای ادمین...")
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🎥 **ویدیوی ارسالی مربوط به خطای کاربر:**\n"
+                f"👤 {failed_job['user_name']} | `{failed_job['user_id']}`"
+            ),
+            parse_mode="Markdown"
+        )
+        await bot.forward_message(
+            chat_id=ADMIN_ID,
+            from_chat_id=failed_job["chat_id"],
+            message_id=failed_job["msg_id"]
+        )
+        await callback.message.edit_text(
+            "✅ ویدیوی شما همراه با لاگ خطا برای پشتیبانی ارسال شد.\n"
+            "تیم پشتیبانی فایل را بررسی و مشکل را حل خواهد کرد. از همکاری شما متشکریم!"
+        )
+    except Exception as e:
+        logging.error(f"Error forwarding failed video: {e}")
+        await callback.message.edit_text("⚠️ متأسفانه ویدیو ارسال نشد، اما گزارش متنی خطا قبلاً برای پشتیبانی ثبت شده است.")
+
+
+@dp.callback_query(F.data.startswith("err_cancel_vid:"))
+async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
+    job_id = callback.data.split(":", 1)[1]
+    FAILED_JOBS.pop(job_id, None)
+    await callback.answer("انصراف ثبت شد.")
+    await callback.message.edit_text("👌 ویدیو ارسال نشد. توضیحات و لاگ خطا قبلاً به صورت خودکار برای پشتیبانی ارسال گردیده است.")
 
 
 # --- بخش پردازش ویدیو ---
@@ -534,17 +577,53 @@ async def queue_worker():
             tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
             clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
 
-            err_text = (
-                f"⚠️ **خطایی در اجرای عملیات رخ داد:**\n\n"
-                f"❌ **شرح خطا:** `{str(e)[:200]}`\n\n"
-                f"📋 **جزئیات لاگ سیستمی:**\n"
-                f"```text\n{clean_tb[:1200]}\n```"
+            u = job.get("user")
+            user_id = job.get("user_id") or (u.id if u else job["chat_id"])
+            user_name = u.full_name if u else "نامشخص"
+            username = f"@{u.username}" if (u and u.username) else "ندارد"
+
+            # ۱. ارسال خودکار و بلادرنگ گزارش خطا و مشخصات کاربر به ادمین
+            admin_err_alert = (
+                f"🚨 **گزارش خطای خودکار در پردازش ویدیو:**\n\n"
+                f"👤 **نام کاربر:** {user_name}\n"
+                f"🆔 **آیدی عددی:** `{user_id}`\n"
+                f"🔗 **یوزرنیم:** {username}\n"
+                f"❌ **شرح خطا:** `{str(e)[:250]}`\n\n"
+                f"📋 **لاگ سیستمی:**\n"
+                f"```text\n{clean_tb[:800]}\n```"
             )
             try:
-                await job["status_msg"].edit_text(err_text, parse_mode="Markdown")
+                await bot.send_message(chat_id=ADMIN_ID, text=admin_err_alert, parse_mode="Markdown")
+            except Exception as adm_err:
+                logging.error(f"Failed to alert admin: {adm_err}")
+
+            # ذخیره کار در صف خطادارها جهت ارسال احتمالی ویدیو
+            if len(FAILED_JOBS) > 100:
+                FAILED_JOBS.pop(next(iter(FAILED_JOBS)))
+
+            FAILED_JOBS[job_id] = {
+                "chat_id": job["chat_id"],
+                "msg_id": job["msg_id"],
+                "user_name": user_name,
+                "user_id": user_id
+            }
+
+            # ۲. ارسال پیام به کاربر همراه با دکمه‌های تایید
+            err_kb = InlineKeyboardBuilder()
+            err_kb.button(text="بله، ویدیو هم فرستاده شود ✅", callback_data=f"err_send_vid:{job_id}")
+            err_kb.button(text="خیر، لازم نیست ❌", callback_data=f"err_cancel_vid:{job_id}")
+            err_kb.adjust(1)
+
+            user_notice = (
+                "⚠️ متأسفانه در فرآیند تبدیل ویدیوی شما خطایی رخ داد.\n\n"
+                "📨 **توضیحات خطا فرستاده شد.**\n\n"
+                "❓ آیا می‌خواهید ویدیو هم همراهش بفرستم تا مشکل سریع‌تر حل بشه؟"
+            )
+            try:
+                await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="Markdown")
             except Exception:
                 try:
-                    await bot.send_message(chat_id=job["chat_id"], text=err_text, parse_mode="Markdown")
+                    await bot.send_message(chat_id=job["chat_id"], text=user_notice, reply_markup=err_kb.as_markup(), parse_mode="Markdown")
                 except Exception:
                     pass
         finally:
