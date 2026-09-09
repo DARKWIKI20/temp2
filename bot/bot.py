@@ -12,10 +12,13 @@ import subprocess
 
 from aiogram import Bot, Dispatcher, F, types as aiotypes
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.filters import CommandStart
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton
 from pyrogram import Client as PyroClient, raw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -30,7 +33,7 @@ MAX_FILE_SIZE = 2000 * 1024 * 1024
 
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
 pyro = PyroClient(
     name="bot_engine",
@@ -39,6 +42,10 @@ pyro = PyroClient(
     bot_token=BOT_TOKEN,
     ipv6=False
 )
+
+# کلاس وضعیت برای ارسال پیام به پشتیبانی
+class SupportState(StatesGroup):
+    waiting_for_message = State()
 
 # موتور آپلود ترتیبی بدون قطعی با مدیریت کاور و استخراج صدا
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
@@ -122,6 +129,12 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 JOB_QUEUE = asyncio.Queue()
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
+
+
+def get_main_reply_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="📞 پیام به پشتیبانی")
+    return builder.as_markup(resize_keyboard=True)
 
 
 def generate_progress_bar(percent: float) -> str:
@@ -220,17 +233,79 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
 
 
 @dp.message(CommandStart())
-async def start_handler(message: aiotypes.Message):
-    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا سقف ۲ گیگابایت).")
+async def start_handler(message: aiotypes.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📞 پیام به پشتیبانی", callback_data="start_support")
+
+    await message.answer(
+        "👋 سلام! به ربات پردازش و فشرده‌سازی ویدیو خوش آمدید.\n\n"
+        "🎬 ویدیوی مورد نظر خود را ارسال کنید (پشتیبانی تا سقف ۲ گیگابایت).\n"
+        "یا از گزینه‌های زیر برای ارتباط با پشتیبانی استفاده کنید:",
+        reply_markup=get_main_reply_keyboard()
+    )
+    await message.answer("📌 منوی دسترسی سریع:", reply_markup=builder.as_markup())
 
 
+# --- بخش مدیریت پشتیبانی ---
+@dp.message(F.text == "📞 پیام به پشتیبانی")
+@dp.callback_query(F.data == "start_support")
+async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="❌ انصراف", callback_data="cancel_support")
+
+    msg_text = "✍️ لطفاً پیام، انتقاد یا مشکل خود را به صورت کامل بنویسید و ارسال کنید:"
+    if isinstance(event, aiotypes.CallbackQuery):
+        await event.answer()
+        await event.message.answer(msg_text, reply_markup=cancel_b.as_markup())
+    else:
+        await event.answer(msg_text, reply_markup=cancel_b.as_markup())
+
+    await state.set_state(SupportState.waiting_for_message)
+
+
+@dp.callback_query(F.data == "cancel_support")
+async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("عملیات لغو شد.")
+    await callback.message.edit_text("❌ ارسال پیام به پشتیبانی لغو شد.")
+
+
+@dp.message(SupportState.waiting_for_message)
+async def forward_support_message(message: aiotypes.Message, state: FSMContext):
+    u = message.from_user
+    user_id = u.id
+    name = u.full_name or "بدون نام"
+    username = f"@{u.username}" if u.username else "ندارد"
+
+    admin_header = (
+        f"📩 **پیام جدید از سمت کاربر برای پشتیبانی:**\n\n"
+        f"👤 **نام:** {name}\n"
+        f"🆔 **آیدی عددی:** `{user_id}`\n"
+        f"🔗 **یوزرنیم:** {username}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    try:
+        # ارسال پیام به ادمین همراه با مشخصات کاربر
+        await bot.send_message(chat_id=ADMIN_ID, text=admin_header, parse_mode="Markdown")
+        await message.forward(chat_id=ADMIN_ID)
+        await message.reply("✅ پیام شما دریافت شد و برای پشتیبانی ارسال گردید. به زودی بررسی خواهد شد.")
+    except Exception as e:
+        logging.error(f"Failed to forward message to admin: {e}")
+        await message.reply("⚠️ متأسفانه در ارسال پیام به پشتیبانی خطایی رخ داد. لطفاً بعداً تلاش کنید.")
+
+    await state.clear()
+
+
+# --- بخش پردازش ویدیو ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     video = message.video or (
         message.document if message.document and message.document.mime_type and message.document.mime_type.startswith("video/") else None
     )
     if not video:
-        return await message.answer("⚠️ لطفاً فایل ویدیویی ارسال کنید.")
+        return await message.answer("⚠️ لطفاً فایل ویدیویی معتبر ارسال کنید.")
     if video.file_size > MAX_FILE_SIZE:
         return await message.answer("❌ حجم فایل بیشتر از سقف مجاز ۲ گیگابایت است.")
 
@@ -358,7 +433,6 @@ async def ui_updater(state: dict):
             if act == "download":
                 text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
             elif act == "encode":
-                # نمایش زمان تخمینی پردازش برای فایل‌های بالای ۵۰ مگابایت
                 eta_val = state.get("eta")
                 if state.get("file_size", 0) >= 50 * 1024 * 1024 and eta_val:
                     text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}\n⏱ زمان تقریبی تا پایان پردازش: **{eta_val}**"
@@ -590,7 +664,6 @@ async def process_job(job: dict):
                 pct = (current_secs / eff_duration) * 100.0
                 ui_state["percent"] = min(99.0, max(1.0, pct))
 
-                # محاسبه ETA بر اساس سرعت واقعی رندر
                 loop = asyncio.get_event_loop()
                 if encode_start_time is None:
                     encode_start_time = loop.time()
