@@ -399,16 +399,16 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. دانلود با اعتبارسنجی
+        # ۱. دانلود فایل از تلگرام با اعتبارسنجی
         await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # آزادسازی حافظه رم قبل از لود FFmpeg
+        # پاکسازی کش رم قبل از شروع انکود برای جلوگیری از OOM
         gc.collect()
 
-        # ۲. پیکربندی کم‌مصرف FFmpeg (جلوگیری قطعی از خطای OOM -9)
+        # ۲. پردازش و تبدیل با FFmpeg
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -445,7 +445,6 @@ async def process_job(job: dict):
                 "-pix_fmt", "yuv420p"
             ]
 
-            # پارامترهای کنترل سقف مصرف رم برای هر دو کدک
             if v_codec == "libx264":
                 cmd += ["-x264opts", "rc-lookahead=10:sync-lookahead=0:bframes=2"]
             elif v_codec == "libx265":
@@ -512,7 +511,7 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. دریافت ابعاد و زمان برای رفع خطای 00:00
+        # ۳. دریافت ابعاد و مشخصات زمان فایل خروجی
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -521,18 +520,54 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. ارسال به تلگرام
+        # ۴. ارسال مستقیم از طریق پروتکل Pyrogram با پیشرفت زنده از ۰ تا ۱۰۰ درصد
         ui_state["action"] = "upload"
-        ui_state["percent"] = 25.0
+        ui_state["percent"] = 0.0
 
         final_size = os.path.getsize(output_path)
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
         caption = f"✅ پردازش انجام شد\n\n📦 اولیه: {initial_size / (1024*1024):.2f} MB\n📉 خروجی: {final_size / (1024*1024):.2f} MB\n⚡ فشرده‌سازی: {reduction}%"
 
-        has_thumb = os.path.exists(thumb_path)
+        has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
         chat_id = job["chat_id"]
 
-        if final_size < 49.5 * 1024 * 1024:
+        try:
+            if mode == "mp3":
+                await pyro.send_audio(
+                    chat_id=chat_id,
+                    audio=output_path,
+                    duration=out_dur,
+                    caption=caption,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                )
+            elif mode == "gif":
+                await pyro.send_animation(
+                    chat_id=chat_id,
+                    animation=output_path,
+                    duration=out_dur,
+                    width=out_w,
+                    height=out_h,
+                    unsave=True,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                )
+            else:
+                await pyro.send_video(
+                    chat_id=chat_id,
+                    video=output_path,
+                    duration=out_dur,
+                    width=out_w,
+                    height=out_h,
+                    thumb=thumb_path if has_thumb else None,
+                    caption=caption,
+                    supports_streaming=True,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                )
+        except Exception as upload_err:
+            logging.warning(f"Pyrogram upload failed ({upload_err}), falling back to Bot API...")
+            # در صورت بروز هر خطای نادری در MTProto، ارسال با Bot API انجام می‌شود
             if mode == "mp3":
                 await bot.send_audio(chat_id=chat_id, audio=FSInputFile(output_path), duration=out_dur, caption=caption)
             elif mode == "gif":
@@ -547,24 +582,6 @@ async def process_job(job: dict):
                     thumbnail=FSInputFile(thumb_path) if has_thumb else None,
                     caption=caption,
                     supports_streaming=True
-                )
-        else:
-            if mode == "mp3":
-                await pyro.send_audio(chat_id=chat_id, audio=output_path, duration=out_dur, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
-            elif mode == "gif":
-                await pyro.send_animation(chat_id=chat_id, animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
-            else:
-                await pyro.send_video(
-                    chat_id=chat_id,
-                    video=output_path,
-                    duration=out_dur,
-                    width=out_w,
-                    height=out_h,
-                    thumb=thumb_path if has_thumb else None,
-                    caption=caption,
-                    supports_streaming=True,
-                    progress=pyro_progress,
-                    progress_args=(ui_state,)
                 )
 
         ui_state["done"] = True
@@ -587,12 +604,12 @@ async def main():
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram متصل شد.")
+        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
     except Exception as e:
         logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده است.")
+    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
