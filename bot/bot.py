@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import asyncio
 import logging
 import subprocess
@@ -89,36 +90,54 @@ def get_cancel_keyboard(job_id: str):
     return b.as_markup()
 
 
-async def get_video_duration(file_path: str) -> float:
+async def get_media_meta(file_path: str) -> dict:
+    meta = {"duration": 0, "width": 1280, "height": 720}
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", file_path,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
-        val = float(stdout.decode().strip())
-        if val > 0:
-            return val
-    except Exception:
-        pass
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=width,height,duration:format=duration",
+            "-of", "json", file_path
+        ]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        data = json.loads(stdout.decode(errors="ignore"))
 
+        if "format" in data and "duration" in data["format"]:
+            meta["duration"] = int(float(data["format"]["duration"]))
+
+        if "streams" in data:
+            for s in data["streams"]:
+                if "width" in s and "height" in s:
+                    meta["width"] = int(s["width"])
+                    meta["height"] = int(s["height"])
+                    if meta["duration"] == 0 and "duration" in s:
+                        meta["duration"] = int(float(s["duration"]))
+                    break
+    except Exception as e:
+        logging.warning(f"Metadata extract warning: {e}")
+    return meta
+
+
+async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
     try:
-        cmd = [FFMPEG_BIN, "-i", file_path]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=4.0)
-        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
-        if match:
-            h, m, s = map(float, match.groups())
-            return h * 3600 + m * 60 + s
+        ss_time = str(max(1, duration // 3)) if duration > 2 else "0.5"
+        cmd = [
+            FFMPEG_BIN, "-y",
+            "-ss", ss_time,
+            "-i", video_path,
+            "-vframes", "1",
+            "-vf", "scale=320:-1",
+            thumb_path
+        ]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await asyncio.wait_for(proc.communicate(), timeout=4.0)
     except Exception:
         pass
-    return 0.0
 
 
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
-    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا ۲ گیگابایت).")
+    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا سقف ۲ گیگابایت).")
 
 
 @dp.message(F.video | F.document)
@@ -195,14 +214,12 @@ async def enqueue_task(callback: types.CallbackQuery):
     )
 
     user = callback.from_user
-    username = user.username if user else None
-
     ACTIVE_PROCESSES[job_id] = {"cancelled": False, "proc": None}
     await JOB_QUEUE.put({
         "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
         "file_size": video.file_size, "file_id": video.file_id,
         "chat_id": callback.message.chat.id, "user": user,
-        "username": username, "status_msg": status_msg
+        "status_msg": status_msg
     })
 
 
@@ -278,73 +295,61 @@ async def process_job(job: dict):
     input_path = os.path.join(DOWNLOAD_DIR, f"in_{job_id}.mp4")
     ext = "mp3" if mode == "mp3" else "mp4"
     output_path = os.path.join(DOWNLOAD_DIR, f"out_{job_id}.{ext}")
+    thumb_path = os.path.join(DOWNLOAD_DIR, f"thumb_{job_id}.jpg")
 
     ui_state = {"status_msg": status_msg, "job_id": job_id, "action": "download", "percent": 0.0, "done": False}
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
-        if os.path.exists(input_path):
-            try:
-                os.remove(input_path)
-            except OSError:
-                pass
+        for p in (input_path, output_path, thumb_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
-        # ۱. دریافت مستقیم فایل بر اساس حجم
+        # ۱. دانلود فایل (استفاده مستقیم از آبجکت Message در پایروگرام برای دانلود کامل فایل‌های سنگین)
         if initial_size < 19.5 * 1024 * 1024:
             ui_state["percent"] = 50.0
             file_info = await bot.get_file(job["file_id"])
             await bot.download_file(file_info.file_path, destination=input_path)
             ui_state["percent"] = 100.0
         else:
-            downloaded = None
-            try:
-                # اولویت ۱: دانلود پایدار مستقیم از طریق file_id
-                downloaded = await pyro.download_media(
-                    job["file_id"],
-                    file_name=input_path,
-                    progress=pyro_progress,
-                    progress_args=(ui_state,)
-                )
-            except Exception as e_fid:
-                logging.warning(f"Download by file_id failed ({e_fid}), trying message fallback...")
-                try:
-                    msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
-                    if msg and not msg.empty and (msg.video or msg.document):
-                        downloaded = await msg.download(
-                            file_name=input_path,
-                            progress=pyro_progress,
-                            progress_args=(ui_state,)
-                        )
-                except Exception as e_msg:
-                    logging.error(f"Fallback download failed: {e_msg}")
+            ui_state["percent"] = 0.0
+            msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
+            if not msg or msg.empty:
+                raise RuntimeError("پیام ویدیو در تلگرام برای دانلود پایروگرام یافت نشد.")
 
+            downloaded = await pyro.download_media(
+                msg,
+                file_name=input_path,
+                progress=pyro_progress,
+                progress_args=(ui_state,)
+            )
             if downloaded and os.path.exists(downloaded):
                 input_path = downloaded
 
-        # اعتبارسنجی قطعی دانلود قبل از اجرای پردازشگر
         if not os.path.exists(input_path):
-            raise RuntimeError("فایل از تلگرام دانلود نشد (ارتباط سرور قطع شد).")
+            raise RuntimeError("خطا در دریافت فایل از تلگرام.")
 
         downloaded_bytes = os.path.getsize(input_path)
-        if downloaded_bytes == 0:
-            raise RuntimeError("فایل دانلود شده خالی (۰ بایت) است. لطفاً فایل را دوباره بفرستید.")
-
-        if downloaded_bytes < initial_size * 0.85:
+        if downloaded_bytes < (initial_size * 0.90):
             raise RuntimeError(f"دانلود ناقص بود: {downloaded_bytes / (1024*1024):.1f}MB از {initial_size / (1024*1024):.1f}MB دریافت شد.")
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. پیکربندی بهینه FFmpeg
+        # ۲. پردازش و فشرده‌سازی اصولی
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
-        duration = await get_video_duration(input_path)
-        eff_duration = duration / speed_factor if speed_factor > 0 else duration
+        in_meta = await get_media_meta(input_path)
+        duration = in_meta["duration"]
+        eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
         cmd = [
             FFMPEG_BIN, "-y",
-            "-threads", "1",
+            "-threads", "2",
             "-i", input_path,
             "-max_muxing_queue_size", "2048"
         ]
@@ -354,7 +359,7 @@ async def process_job(job: dict):
         elif mode == "gif":
             vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
             vf += ["fps=15", "scale=480:-2:flags=lanczos"]
-            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
+            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
         else:
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
@@ -367,17 +372,22 @@ async def process_job(job: dict):
                 "-c:v", v_codec,
                 "-vf", ",".join(vf),
                 "-crf", crf_map.get(cfg["crf"], "28"),
-                "-preset", "ultrafast",
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart"
+                "-preset", "veryfast",
+                "-pix_fmt", "yuv420p"
             ]
             if cfg["mute"]:
                 cmd += ["-an"]
             else:
-                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-async", "1"]
+                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
                 if speed_factor != 1.0:
                     cmd += ["-filter:a", f"atempo={speed_factor}"]
-            cmd += ["-progress", "pipe:2", output_path]
+
+            cmd += [
+                "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart",
+                "-progress", "pipe:2",
+                output_path
+            ]
 
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         ACTIVE_PROCESSES[job_id]["proc"] = proc
@@ -426,7 +436,16 @@ async def process_job(job: dict):
             err_details = "\n".join(last_error_lines[-3:]) if last_error_lines else "خطای نامشخص"
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n`{err_details}`")
 
-        # ۳. ارسال به تلگرام
+        # ۳. استخراج متادیتای نهایی و تولید کاور برای پیشگیری از تایم 00:00
+        out_meta = await get_media_meta(output_path)
+        out_dur = out_meta["duration"] or int(eff_duration)
+        out_w = out_meta["width"]
+        out_h = out_meta["height"]
+
+        if mode == "video":
+            await generate_thumbnail(output_path, thumb_path, out_dur)
+
+        # ۴. ارسال به تلگرام با تمام متادیتاها
         ui_state["action"] = "upload"
         ui_state["percent"] = 25.0
 
@@ -434,32 +453,43 @@ async def process_job(job: dict):
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
         caption = f"✅ پردازش انجام شد\n\n📦 اولیه: {initial_size / (1024*1024):.2f} MB\n📉 خروجی: {final_size / (1024*1024):.2f} MB\n⚡ فشرده‌سازی: {reduction}%"
 
-        target_chat = f"@{job['username']}" if job.get("username") else job["chat_id"]
+        has_thumb = os.path.exists(thumb_path)
+        chat_id = job["chat_id"]
 
         if final_size < 49.5 * 1024 * 1024:
             if mode == "mp3":
-                await bot.send_audio(chat_id=job["chat_id"], audio=FSInputFile(output_path), caption=caption)
+                await bot.send_audio(chat_id=chat_id, audio=FSInputFile(output_path), duration=out_dur, caption=caption)
             elif mode == "gif":
-                await bot.send_animation(chat_id=job["chat_id"], animation=FSInputFile(output_path), caption=caption)
+                await bot.send_animation(chat_id=chat_id, animation=FSInputFile(output_path), caption=caption)
             else:
-                await bot.send_video(chat_id=job["chat_id"], video=FSInputFile(output_path), caption=caption, supports_streaming=True)
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=FSInputFile(output_path),
+                    duration=out_dur,
+                    width=out_w,
+                    height=out_h,
+                    thumbnail=FSInputFile(thumb_path) if has_thumb else None,
+                    caption=caption,
+                    supports_streaming=True
+                )
         else:
-            try:
-                dest = target_chat
-                if mode == "mp3":
-                    await pyro.send_audio(chat_id=dest, audio=output_path, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
-                elif mode == "gif":
-                    await pyro.send_animation(chat_id=dest, animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
-                else:
-                    await pyro.send_video(chat_id=dest, video=output_path, caption=caption, supports_streaming=True, progress=pyro_progress, progress_args=(ui_state,))
-            except Exception:
-                dest = job["chat_id"]
-                if mode == "mp3":
-                    await pyro.send_audio(chat_id=dest, audio=output_path, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
-                elif mode == "gif":
-                    await pyro.send_animation(chat_id=dest, animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
-                else:
-                    await pyro.send_video(chat_id=dest, video=output_path, caption=caption, supports_streaming=True, progress=pyro_progress, progress_args=(ui_state,))
+            if mode == "mp3":
+                await pyro.send_audio(chat_id=chat_id, audio=output_path, duration=out_dur, caption=caption, progress=pyro_progress, progress_args=(ui_state,))
+            elif mode == "gif":
+                await pyro.send_animation(chat_id=chat_id, animation=output_path, caption=caption, unsave=True, progress=pyro_progress, progress_args=(ui_state,))
+            else:
+                await pyro.send_video(
+                    chat_id=chat_id,
+                    video=output_path,
+                    duration=out_dur,
+                    width=out_w,
+                    height=out_h,
+                    thumb=thumb_path if has_thumb else None,
+                    caption=caption,
+                    supports_streaming=True,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                )
 
         ui_state["done"] = True
         ui_task.cancel()
@@ -469,7 +499,7 @@ async def process_job(job: dict):
         ui_state["done"] = True
         if not ui_task.done():
             ui_task.cancel()
-        for p in (input_path, output_path):
+        for p in (input_path, output_path, thumb_path):
             if os.path.exists(p):
                 try:
                     os.remove(p)
@@ -481,12 +511,12 @@ async def main():
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
+        logging.info("✅ کلاینت Pyrogram متصل شد.")
     except Exception as e:
-        logging.error(f"خطا در شروع کلاینت Pyrogram: {e}")
+        logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
+    logging.info("✅ ربات آنلاین و آماده است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
