@@ -63,7 +63,6 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
-# دریافت زمان مصرف واقعی CPU از کرنل لینوکس
 def get_cpu_seconds() -> float:
     try:
         if os.path.exists("/sys/fs/cgroup/cpu.stat"):
@@ -80,7 +79,6 @@ def get_cpu_seconds() -> float:
     return ru.user + ru.system + ru.children_user + ru.children_system
 
 
-# مدیریت آمار و محدودیت‌ها
 def load_stats() -> dict:
     if os.path.exists(STATS_FILE):
         try:
@@ -116,7 +114,7 @@ def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tuple[boo
 
     stats = load_stats()
     limit = stats.get("daily_limit_mb", 500)
-    if limit == 0:  # 0 یعنی بدون محدودیت
+    if limit == 0:
         return True, 0.0, 0
 
     today_str = datetime.date.today().isoformat()
@@ -175,7 +173,6 @@ def record_job_stats(user_id: int, name: str, username: str, cost: float, file_s
     save_stats(stats)
 
 
-# مدیریت لیست کاربران
 def load_users() -> list:
     if os.path.exists(USERS_FILE):
         try:
@@ -197,7 +194,6 @@ def register_user(user_id: int):
             logging.warning(f"Failed to register user: {e}")
 
 
-# مدیریت تنظیمات نمایش
 def load_prefs() -> dict:
     if os.path.exists(PREFS_FILE):
         try:
@@ -230,7 +226,6 @@ def set_user_show_details(user_id: int, show_details: bool):
     save_prefs(prefs)
 
 
-# متد آپلود بدون فریز
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -508,7 +503,6 @@ async def close_admin_panel(callback: aiotypes.CallbackQuery, state: FSMContext)
     await callback.message.delete()
 
 
-# ۱. رتبه‌بندی پرمصرف‌ترین کاربران
 @dp.callback_query(F.data == "admin_top_users")
 async def show_top_users(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -521,7 +515,6 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
     if not users_dict:
         return await callback.message.answer("📊 هنوز آماری از مصرف کاربران ثبت نشده است.")
 
-    # مرتب‌سازی بر اساس هزینه کل به صورت نزولی
     sorted_users = sorted(users_dict.items(), key=lambda item: item[1].get("total_cost", 0.0), reverse=True)
 
     builder = InlineKeyboardBuilder()
@@ -608,14 +601,13 @@ async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
 
     try:
         await bot.send_video(chat_id=ADMIN_ID, video=max_vid["file_id"], caption=cap, parse_mode="Markdown")
-    except Exception as e:
+    except Exception:
         try:
             await bot.send_document(chat_id=ADMIN_ID, document=max_vid["file_id"], caption=cap, parse_mode="Markdown")
         except Exception as e2:
-            await callback.message.answer(f"⚠️ ارسال فایل با خطا مواجه شد (ممکن است کش تلگرام پاک شده باشد):\n`{e2}`")
+            await callback.message.answer(f"⚠️ ارسال فایل با خطا مواجه شد:\n`{e2}`")
 
 
-# ۲. تنظیم سقف محدودیت روزانه (Daily Limit)
 @dp.callback_query(F.data == "admin_set_limit")
 async def show_limit_settings(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -701,7 +693,6 @@ async def back_to_admin_main(callback: aiotypes.CallbackQuery, state: FSMContext
     )
 
 
-# ۳. فرآیند ارسال به کل کاربران
 @dp.callback_query(F.data == "admin_broadcast")
 async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -745,7 +736,6 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
     )
 
 
-# ۴. فرآیند ارسال به کاربر خاص
 @dp.callback_query(F.data == "admin_send_single")
 async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -1328,7 +1318,6 @@ async def process_job(job: dict):
     fmt_choice = cfg.get("fmt", "orig")
     speed_factor = float(cfg.get("speed", "1.0"))
 
-    # اندازه‌گیری دقیق منابع جهت محاسبه هزینه بدون تقریب
     start_cpu_sec = get_cpu_seconds()
     start_wall_time = time.time()
 
@@ -1404,30 +1393,37 @@ async def process_job(job: dict):
         else:
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
-            scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if cfg["res"] == "orig" else f"scale=-2:{cfg['res']}:flags=fast_bilinear"
-            vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
-            vf.append(scale)
+
+            # اعمال فیلتر فقط در صورت نیاز (تغییر سرعت یا تغییر ابعاد)
+            vf = []
+            if speed_factor != 1.0:
+                vf.append(f"setpts={1.0 / speed_factor}*PTS")
+            if cfg["res"] != "orig":
+                vf.append(f"scale=-2:{cfg['res']}:flags=fast_bilinear")
 
             cmd += [
                 "-map", "0:v:0",
                 "-c:v", v_codec,
-                "-vf", ",".join(vf),
                 "-crf", crf_map.get(cfg["crf"], "28"),
                 "-preset", "ultrafast",
                 "-pix_fmt", "yuv420p"
             ]
 
-            if v_codec == "libx264":
-                cmd += ["-x264opts", "rc-lookahead=10:sync-lookahead=0:bframes=2"]
-            elif v_codec == "libx265":
-                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=5:bframes=2"]
+            if vf:
+                cmd += ["-vf", ",".join(vf)]
 
+            if v_codec == "libx264":
+                cmd += ["-tune", "fastdecode", "-x264opts", "rc-lookahead=5:sync-lookahead=0:bframes=0"]
+            elif v_codec == "libx265":
+                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=5:bframes=0"]
+
+            # بهینه‌سازی صدا: کپی مستقیم صوت بدون انکود جهت افزایش سرعت پردازش
             if cfg["mute"]:
                 cmd += ["-an"]
+            elif speed_factor != 1.0:
+                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-filter:a", f"atempo={speed_factor}"]
             else:
-                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
-                if speed_factor != 1.0:
-                    cmd += ["-filter:a", f"atempo={speed_factor}"]
+                cmd += ["-map", "0:a:0?", "-c:a", "copy"]
 
             cmd += ["-avoid_negative_ts", "make_zero"]
 
@@ -1577,7 +1573,6 @@ async def process_job(job: dict):
         ui_task.cancel()
         await status_msg.delete()
 
-        # محاسبه هزینه واقعی دلاری بر اساس تعرفه دقیق Railway
         end_cpu_sec = get_cpu_seconds()
         end_wall_time = time.time()
 
@@ -1590,7 +1585,6 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
-        # ثبت آمار مصرف کاربر و ذخیره پرمصرف‌ترین ویدیو
         record_job_stats(
             user_id=user_id,
             name=user_name,
