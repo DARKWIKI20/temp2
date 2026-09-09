@@ -1,8 +1,8 @@
 import os
-import io
+import re
 import asyncio
 import logging
-import aiohttp
+import subprocess
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -17,8 +17,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcD
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
 API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
-WORKER_URL = os.getenv("WORKER_URL", "http://honest-surprise.railway.internal:8000").rstrip("/")
 
+FFMPEG_BIN = "ffmpeg"
 MAX_FILE_SIZE = 2000 * 1024 * 1024
 
 bot = Bot(token=BOT_TOKEN)
@@ -32,30 +32,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 JOB_QUEUE = asyncio.Queue()
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
-
-
-class TrackableFile(io.IOBase):
-    def __init__(self, path, state):
-        self._file = open(path, "rb")
-        self._total = os.path.getsize(path)
-        self._read_bytes = 0
-        self._state = state
-
-    def __len__(self):
-        return self._total
-
-    def read(self, size=-1):
-        data = self._file.read(size)
-        self._read_bytes += len(data)
-        if self._total > 0:
-            self._state["percent"] = min(99.0, (self._read_bytes / self._total) * 100.0)
-        return data
-
-    def close(self):
-        self._file.close()
-
-    def fileno(self):
-        return self._file.fileno()
 
 
 def generate_progress_bar(percent: float) -> str:
@@ -113,9 +89,36 @@ def get_cancel_keyboard(job_id: str):
     return b.as_markup()
 
 
+async def get_video_duration(file_path: str) -> float:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", file_path,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        val = float(stdout.decode().strip())
+        if val > 0:
+            return val
+    except Exception:
+        pass
+
+    try:
+        cmd = [FFMPEG_BIN, "-i", file_path]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr.decode(errors="ignore"))
+        if match:
+            h, m, s = map(float, match.groups())
+            return h * 3600 + m * 60 + s
+    except Exception:
+        pass
+    return 0.0
+
+
 @dp.message(CommandStart())
 async def start_handler(message: types.Message):
-    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا سقف ۲ گیگابایت).")
+    await message.answer("🎬 ویدیوی خود را بفرستید (پشتیبانی تا ۲ گیگابایت).")
 
 
 @dp.message(F.video | F.document)
@@ -154,21 +157,18 @@ async def stop_processing(callback: types.CallbackQuery):
     if job_id in ACTIVE_PROCESSES or job_id in RUNNING_TASKS:
         ACTIVE_PROCESSES[job_id]["cancelled"] = True
         
+        proc = ACTIVE_PROCESSES.get(job_id, {}).get("proc")
+        if proc:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
         task = RUNNING_TASKS.get(job_id)
         if task and not task.done():
             task.cancel()
 
-        worker_task_id = ACTIVE_PROCESSES.get(job_id, {}).get("worker_task_id")
-        if worker_task_id:
-            async def notify_cancel():
-                try:
-                    async with aiohttp.ClientSession() as s:
-                        await s.post(f"{WORKER_URL}/cancel/{worker_task_id}", timeout=3)
-                except Exception:
-                    pass
-            asyncio.create_task(notify_cancel())
-
-        await callback.answer("پردازش متوقف شد.")
+        await callback.answer("پردازش بلافاصله متوقف شد.")
         await callback.message.edit_text("🛑 پردازش لغو شد و نوبت صف آزاد گردید.")
     else:
         await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
@@ -194,7 +194,7 @@ async def enqueue_task(callback: types.CallbackQuery):
         reply_markup=get_cancel_keyboard(job_id)
     )
 
-    ACTIVE_PROCESSES[job_id] = {"cancelled": False, "worker_task_id": None}
+    ACTIVE_PROCESSES[job_id] = {"cancelled": False, "proc": None}
     await JOB_QUEUE.put({
         "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
         "file_size": video.file_size, "file_id": video.file_id,
@@ -218,7 +218,7 @@ async def queue_worker():
         try:
             await task
         except asyncio.CancelledError:
-            logging.info(f"Task {job_id} aborted.")
+            logging.info(f"Task {job_id} cancelled cleanly.")
         except Exception as e:
             logging.error(f"Job {job_id} error: {e}", exc_info=True)
             try:
@@ -238,13 +238,9 @@ async def ui_updater(state: dict):
             bar = generate_progress_bar(state.get("percent", 0.0))
             act = state.get("action", "")
             if act == "download":
-                text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
-            elif act == "transfer":
-                text = f"🔄 ارسال واقعی و سریع به ورکر:\n{bar}"
+                text = f"📥 در حال دریافت فایل:\n{bar}"
             elif act == "encode":
-                text = f"⚙️ در حال فشرده‌سازی و رندر:\n{bar}"
-            elif act == "download_worker":
-                text = f"📥 در حال دریافت فایل خروجی:\n{bar}"
+                text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}"
             elif act == "upload":
                 text = f"📤 در حال ارسال به تلگرام:\n{bar}"
             else:
@@ -283,6 +279,7 @@ async def process_job(job: dict):
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
+        # ۱. دانلود فایل مستقیم روی دیسک
         if initial_size < 19.5 * 1024 * 1024:
             ui_state["percent"] = 50.0
             file_info = await bot.get_file(job["file_id"])
@@ -295,76 +292,79 @@ async def process_job(job: dict):
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        ui_state["action"] = "transfer"
-        ui_state["percent"] = 0.0
+        # ۲. پیکربندی بهینه FFmpeg (مصرف حداقل رم)
+        ui_state["action"] = "encode"
+        ui_state["percent"] = 1.0
 
-        total_size = os.path.getsize(input_path)
-        headers = {
-            "Content-Length": str(total_size),
-            "Content-Type": "application/octet-stream"
-        }
-        
-        params = {
-            "mode": mode,
-            "res": cfg["res"],
-            "codec": cfg["codec"],
-            "crf": cfg["crf"],
-            "mute": "1" if cfg["mute"] else "0",
-            "speed": str(speed_factor)
-        }
+        duration = await get_video_duration(input_path)
+        eff_duration = duration / speed_factor if speed_factor > 0 else duration
 
-        async with aiohttp.ClientSession() as session:
-            f_track = TrackableFile(input_path, ui_state)
-            try:
-                target_url = f"{WORKER_URL}/start"
-                # جریان کامل و خالص بدون FormData به همراه حجم دقیق
-                async with session.post(target_url, params=params, data=f_track, headers=headers, timeout=aiohttp.ClientTimeout(total=1800)) as resp:
-                    if resp.status != 200:
-                        raise RuntimeError(f"خطای سرور پردازش: {await resp.text()}")
-                    res_json = await resp.json()
-                    worker_task_id = res_json["task_id"]
-                    ACTIVE_PROCESSES[job_id]["worker_task_id"] = worker_task_id
-            finally:
-                f_track.close()
+        # محدود کردن به ۱ تا ۲ ترد برای پیشگیری قطعی از کرش رم سرور
+        cmd = [FFMPEG_BIN, "-y", "-i", input_path, "-threads", "2", "-max_muxing_queue_size", "512"]
 
+        if mode == "mp3":
+            cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-progress", "pipe:2", output_path]
+        elif mode == "gif":
+            vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
+            vf += ["fps=15", "scale=480:-2:flags=lanczos"]
+            cmd += ["-an", "-c:v", "libx264", "-vf", ",".join(vf), "-crf", "28", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
+        else:
+            crf_map = {"light": "23", "medium": "28", "heavy": "34"}
+            v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
+            scale = "scale=trunc(iw/2)*2:trunc(ih/2)*2" if cfg["res"] == "orig" else f"scale=-2:{cfg['res']}:flags=lanczos"
+            vf = [f"setpts={1.0 / speed_factor}*PTS"] if speed_factor != 1.0 else []
+            vf.append(scale)
+            cmd += ["-map", "0:v:0", "-c:v", v_codec, "-vf", ",".join(vf), "-crf", crf_map.get(cfg["crf"], "28"), "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+            if cfg["mute"]:
+                cmd += ["-an"]
+            else:
+                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-strict", "experimental"]
+                if speed_factor != 1.0:
+                    cmd += ["-filter:a", f"atempo={speed_factor}"]
+            cmd += ["-progress", "pipe:2", output_path]
+
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        ACTIVE_PROCESSES[job_id]["proc"] = proc
+
+        time_us_pattern = re.compile(r"out_time_us=(\d+)")
+        time_str_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
             if ACTIVE_PROCESSES[job_id]["cancelled"]:
+                try: proc.kill()
+                except Exception: pass
                 return
 
-            ui_state["action"] = "encode"
-            ui_state["percent"] = 1.0
+            line_str = line.decode(errors="ignore").strip()
+            current_secs = None
 
-            while not ACTIVE_PROCESSES[job_id]["cancelled"]:
-                await asyncio.sleep(1.5)
-                async with session.get(f"{WORKER_URL}/status/{worker_task_id}", timeout=10) as resp:
-                    if resp.status == 200:
-                        st = await resp.json()
-                        ui_state["percent"] = st.get("percent", 1.0)
-                        if st.get("status") == "done":
-                            break
-                        if st.get("status") == "error":
-                            raise RuntimeError(f"خطای رندر در ورکر: {st.get('error')}")
+            match_us = time_us_pattern.search(line_str)
+            if match_us:
+                current_secs = float(match_us.group(1)) / 1_000_000.0
+            else:
+                match_str = time_str_pattern.search(line_str)
+                if match_str:
+                    h, m, s = map(float, match_str.groups())
+                    current_secs = h * 3600 + m * 60 + s
 
-            if ACTIVE_PROCESSES[job_id]["cancelled"]:
-                return
+            if current_secs is not None and eff_duration > 0:
+                pct = (current_secs / eff_duration) * 100.0
+                ui_state["percent"] = min(99.0, max(1.0, pct))
 
-            ui_state["action"] = "download_worker"
-            ui_state["percent"] = 0.0
-            
-            async with session.get(f"{WORKER_URL}/download/{worker_task_id}", timeout=aiohttp.ClientTimeout(total=1800)) as resp:
-                total_dl = int(resp.headers.get('Content-Length', 0))
-                downloaded = 0
-                with open(output_path, "wb") as out_f:
-                    while chunk := await resp.content.read(1024 * 1024):
-                        out_f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_dl > 0:
-                            ui_state["percent"] = min(99.0, (downloaded / total_dl) * 100.0)
+        await proc.wait()
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
+        if proc.returncode != 0 or not os.path.exists(output_path):
+            raise RuntimeError(f"خطای پردازشگر کد: {proc.returncode}")
+
+        # ۳. ارسال به تلگرام
         ui_state["action"] = "upload"
-        ui_state["percent"] = 20.0
+        ui_state["percent"] = 25.0
 
         final_size = os.path.getsize(output_path)
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
