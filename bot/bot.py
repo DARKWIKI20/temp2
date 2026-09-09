@@ -3,6 +3,7 @@ import re
 import json
 import asyncio
 import logging
+import traceback
 import subprocess
 
 from aiogram import Bot, Dispatcher, F, types
@@ -114,7 +115,7 @@ async def get_media_meta(file_path: str) -> dict:
                         meta["duration"] = int(float(s["duration"]))
                     break
     except Exception as e:
-        logging.warning(f"Metadata extract warning: {e}")
+        logging.warning(f"Metadata read error: {e}")
     return meta
 
 
@@ -213,12 +214,11 @@ async def enqueue_task(callback: types.CallbackQuery):
         reply_markup=get_cancel_keyboard(job_id)
     )
 
-    user = callback.from_user
     ACTIVE_PROCESSES[job_id] = {"cancelled": False, "proc": None}
     await JOB_QUEUE.put({
         "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
         "file_size": video.file_size, "file_id": video.file_id,
-        "chat_id": callback.message.chat.id, "user": user,
+        "chat_id": callback.message.chat.id, "user": callback.from_user,
         "status_msg": status_msg
     })
 
@@ -241,11 +241,26 @@ async def queue_worker():
         except asyncio.CancelledError:
             logging.info(f"Task {job_id} cancelled.")
         except Exception as e:
-            logging.error(f"Job {job_id} error: {e}", exc_info=True)
+            tb = traceback.format_exc()
+            logging.error(f"Job {job_id} error:\n{tb}")
+
+            # تمیز کردن لاگ و استخراج خطوط اصلی خطا
+            tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
+            clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
+
+            err_text = (
+                f"⚠️ **خطایی در اجرای عملیات رخ داد:**\n\n"
+                f"❌ **شرح خطا:** `{str(e)[:200]}`\n\n"
+                f"📋 **جزئیات لاگ سیستمی (Traceback):**\n"
+                f"```text\n{clean_tb[:1200]}\n```"
+            )
             try:
-                await job["status_msg"].edit_text(f"⚠️ خطایی رخ داد: `{e}`")
+                await job["status_msg"].edit_text(err_text, parse_mode="Markdown")
             except Exception:
-                pass
+                try:
+                    await bot.send_message(chat_id=job["chat_id"], text=err_text, parse_mode="Markdown")
+                except Exception:
+                    pass
         finally:
             RUNNING_TASKS.pop(job_id, None)
             ACTIVE_PROCESSES.pop(job_id, None)
@@ -259,7 +274,7 @@ async def ui_updater(state: dict):
             bar = generate_progress_bar(state.get("percent", 0.0))
             act = state.get("action", "")
             if act == "download":
-                text = f"📥 در حال دریافت فایل:\n{bar}"
+                text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
             elif act == "encode":
                 text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}"
             elif act == "upload":
@@ -282,6 +297,84 @@ async def ui_updater(state: dict):
 def pyro_progress(curr, total, state):
     if total > 0:
         state["percent"] = (curr / total) * 100.0
+
+
+async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_retries: int = 3):
+    initial_size = job["file_size"]
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
+        if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
+            return
+
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except OSError:
+                pass
+
+        ui_state["action"] = "download"
+        ui_state["percent"] = 0.0
+
+        if attempt > 1:
+            logging.info(f"Retrying download for {job['job_id']} (Attempt {attempt}/{max_retries})...")
+            try:
+                await job["status_msg"].edit_text(
+                    f"🔄 قطع موقت ارتباط! در حال تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...\n"
+                    f"لطفاً صبور باشید.",
+                    reply_markup=get_cancel_keyboard(job["job_id"])
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+
+        try:
+            if initial_size < 19.5 * 1024 * 1024:
+                file_info = await bot.get_file(job["file_id"])
+                await bot.download_file(file_info.file_path, destination=input_path)
+            else:
+                msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
+                if not msg or msg.empty:
+                    raise RuntimeError(f"پیام مرجع ویدیو (ID: {job['msg_id']}) در تلگرام بازخوانی نشد.")
+
+                # دریافت استریمی برای دور زدن باگ توقف ۱ مگابایتی
+                try:
+                    with open(input_path, "wb") as f:
+                        curr_bytes = 0
+                        async for chunk in pyro.stream_media(msg):
+                            if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
+                                return
+                            f.write(chunk)
+                            curr_bytes += len(chunk)
+                            if initial_size > 0:
+                                ui_state["percent"] = min(99.0, (curr_bytes / initial_size) * 100.0)
+                except Exception as stream_err:
+                    logging.warning(f"stream_media failed ({stream_err}), trying standard download_media...")
+                    await pyro.download_media(
+                        msg,
+                        file_name=input_path,
+                        progress=pyro_progress,
+                        progress_args=(ui_state,)
+                    )
+
+            if os.path.exists(input_path):
+                downloaded_bytes = os.path.getsize(input_path)
+                if downloaded_bytes >= (initial_size * 0.95):
+                    ui_state["percent"] = 100.0
+                    return
+                else:
+                    raise RuntimeError(
+                        f"فایل ناقص است: {downloaded_bytes / (1024*1024):.2f}MB از {initial_size / (1024*1024):.2f}MB دانلود شد."
+                    )
+            else:
+                raise RuntimeError("فایل دانلودشده پس از عملیات ذخیره نشد.")
+
+        except Exception as e:
+            last_err = e
+            logging.warning(f"Download attempt {attempt} error: {e}")
+            await asyncio.sleep(2)
+
+    raise RuntimeError(f"دانلود فایل پس از {max_retries} بار تلاش متوالی متوقف شد:\n{last_err}")
 
 
 async def process_job(job: dict):
@@ -308,38 +401,13 @@ async def process_job(job: dict):
                 except OSError:
                     pass
 
-        # ۱. دانلود فایل (استفاده مستقیم از آبجکت Message در پایروگرام برای دانلود کامل فایل‌های سنگین)
-        if initial_size < 19.5 * 1024 * 1024:
-            ui_state["percent"] = 50.0
-            file_info = await bot.get_file(job["file_id"])
-            await bot.download_file(file_info.file_path, destination=input_path)
-            ui_state["percent"] = 100.0
-        else:
-            ui_state["percent"] = 0.0
-            msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
-            if not msg or msg.empty:
-                raise RuntimeError("پیام ویدیو در تلگرام برای دانلود پایروگرام یافت نشد.")
-
-            downloaded = await pyro.download_media(
-                msg,
-                file_name=input_path,
-                progress=pyro_progress,
-                progress_args=(ui_state,)
-            )
-            if downloaded and os.path.exists(downloaded):
-                input_path = downloaded
-
-        if not os.path.exists(input_path):
-            raise RuntimeError("خطا در دریافت فایل از تلگرام.")
-
-        downloaded_bytes = os.path.getsize(input_path)
-        if downloaded_bytes < (initial_size * 0.90):
-            raise RuntimeError(f"دانلود ناقص بود: {downloaded_bytes / (1024*1024):.1f}MB از {initial_size / (1024*1024):.1f}MB دریافت شد.")
+        # ۱. اجرای دانلود با مکانیزم تلاش مجدد خودکار
+        await download_with_retry(job, input_path, ui_state, max_retries=3)
 
         if ACTIVE_PROCESSES[job_id]["cancelled"]:
             return
 
-        # ۲. پردازش و فشرده‌سازی اصولی
+        # ۲. پیکربندی و اجرای فشرده‌سازی با FFmpeg
         ui_state["action"] = "encode"
         ui_state["percent"] = 1.0
 
@@ -410,7 +478,7 @@ async def process_job(job: dict):
             line_str = line.decode(errors="ignore").strip()
             if line_str:
                 last_error_lines.append(line_str)
-                if len(last_error_lines) > 6:
+                if len(last_error_lines) > 8:
                     last_error_lines.pop(0)
 
             current_secs = None
@@ -433,10 +501,10 @@ async def process_job(job: dict):
             return
 
         if proc.returncode != 0 or not os.path.exists(output_path):
-            err_details = "\n".join(last_error_lines[-3:]) if last_error_lines else "خطای نامشخص"
-            raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n`{err_details}`")
+            err_details = "\n".join(last_error_lines[-5:]) if last_error_lines else "لاگ نامشخص"
+            raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
-        # ۳. استخراج متادیتای نهایی و تولید کاور برای پیشگیری از تایم 00:00
+        # ۳. دریافت ابعاد و مشخصات زمان برای جلوگیری از تایم 00:00
         out_meta = await get_media_meta(output_path)
         out_dur = out_meta["duration"] or int(eff_duration)
         out_w = out_meta["width"]
@@ -445,7 +513,7 @@ async def process_job(job: dict):
         if mode == "video":
             await generate_thumbnail(output_path, thumb_path, out_dur)
 
-        # ۴. ارسال به تلگرام با تمام متادیتاها
+        # ۴. ارسال به تلگرام
         ui_state["action"] = "upload"
         ui_state["percent"] = 25.0
 
@@ -511,12 +579,12 @@ async def main():
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
-        logging.info("✅ کلاینت Pyrogram متصل شد.")
+        logging.info("✅ کلاینت Pyrogram با موفقیت متصل شد.")
     except Exception as e:
         logging.error(f"خطای شروع Pyrogram: {e}")
 
     asyncio.create_task(queue_worker())
-    logging.info("✅ ربات آنلاین و آماده است.")
+    logging.info("✅ ربات آنلاین و آماده دریافت ویدیو است.")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
