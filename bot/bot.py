@@ -40,7 +40,7 @@ pyro = PyroClient(
     ipv6=False
 )
 
-# موتور آپلود ترتیبی پایدار با مدیریت کامل کاور و استخراج صدا
+# موتور آپلود ترتیبی بدون قطعی با مدیریت کاور و استخراج صدا
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -358,14 +358,19 @@ async def ui_updater(state: dict):
             if act == "download":
                 text = f"📥 در حال دریافت فایل از تلگرام:\n{bar}"
             elif act == "encode":
-                text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}"
+                # نمایش زمان تخمینی پردازش برای فایل‌های بالای ۵۰ مگابایت
+                eta_val = state.get("eta")
+                if state.get("file_size", 0) >= 50 * 1024 * 1024 and eta_val:
+                    text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}\n⏱ زمان تقریبی تا پایان پردازش: **{eta_val}**"
+                else:
+                    text = f"⚙️ در حال فشرده‌سازی و پردازش:\n{bar}"
             elif act == "upload":
                 text = f"📤 در حال ارسال به تلگرام:\n{bar}"
             else:
                 text = "⏳ لطفا کمی صبر کنید..."
 
             if text != last_text:
-                await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]))
+                await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]), parse_mode="Markdown")
                 last_text = text
         except (TelegramBadRequest, asyncio.CancelledError):
             pass
@@ -467,7 +472,15 @@ async def process_job(job: dict):
     output_path = os.path.join(DOWNLOAD_DIR, f"out_{job_id}.{ext}")
     thumb_path = os.path.join(DOWNLOAD_DIR, f"thumb_{job_id}.jpg")
 
-    ui_state = {"status_msg": status_msg, "job_id": job_id, "action": "download", "percent": 0.0, "done": False}
+    ui_state = {
+        "status_msg": status_msg,
+        "job_id": job_id,
+        "action": "download",
+        "percent": 0.0,
+        "done": False,
+        "file_size": initial_size,
+        "eta": None
+    }
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
@@ -544,6 +557,7 @@ async def process_job(job: dict):
         time_us_pattern = re.compile(r"out_time_us=(\d+)")
         time_str_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
         last_error_lines = []
+        encode_start_time = None
 
         while True:
             line = await proc.stderr.readline()
@@ -575,6 +589,22 @@ async def process_job(job: dict):
             if current_secs is not None and eff_duration > 0:
                 pct = (current_secs / eff_duration) * 100.0
                 ui_state["percent"] = min(99.0, max(1.0, pct))
+
+                # محاسبه ETA بر اساس سرعت واقعی رندر
+                loop = asyncio.get_event_loop()
+                if encode_start_time is None:
+                    encode_start_time = loop.time()
+                else:
+                    elapsed = loop.time() - encode_start_time
+                    if elapsed > 3.0 and current_secs > 1.5:
+                        render_speed = current_secs / elapsed
+                        if render_speed > 0:
+                            rem_real_secs = max(0.0, eff_duration - current_secs) / render_speed
+                            mins, secs = divmod(int(rem_real_secs), 60)
+                            if mins > 0:
+                                ui_state["eta"] = f"{mins} دقیقه و {secs} ثانیه"
+                            else:
+                                ui_state["eta"] = f"{secs} ثانیه"
 
         await proc.wait()
 
