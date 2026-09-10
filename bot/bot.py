@@ -36,254 +36,26 @@ FFMPEG_BIN = "ffmpeg"
 MAX_FILE_SIZE = 300 * 1024 * 1024  # سقف ۳۰۰ مگابایت
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
-TEXTS_FILE = os.getenv("TEXTS_FILE", "bot_texts.json")
 
-# متون پیش‌فرض کامل برای عدم وابستگی الزامی به فایل داکر
-DEFAULT_TEXTS = {
-  "buttons": {
-    "reply_keyboard": {
-      "settings": "⚙️ تنظیمات",
-      "support": "📞 ارتباط با پشتیبانی",
-      "admin_panel": "👑 پنل مدیریت"
-    },
-    "start_random_phrases": [
-      "بزن نریم", "باشه بسته شو دیگه", "حله خداحافظ", "باشه", "اوکی دوکی",
-      "خیلی ممنون", "بسته شو", "تنظیم کن", "حله داداش", "کاری ندارم دیگه",
-      "همین خوبه", "ایول", "بسته شود بلکه پسندیده شود", "ترو خدا همین رو ذخیره کن",
-      "حله فدات", "دمت گرم"
-    ],
-    "video_config_keyboard": {
-      "mode_video": "🎬 تبدیل ویدیو",
-      "mode_audio": "🎵 استخراج صدا (موزیک)",
-      "format_original": "📁 فرمت خروجی: مثل فایل اصلی ({orig_ext})",
-      "format_mp4": "MP4",
-      "format_mkv": "MKV",
-      "format_mov": "MOV",
-      "resolutions": {"orig": "کیفیت اصلی", "1080": "1080p", "720": "720p", "480": "480p"},
-      "codecs": {"h264": "H.264 (استاندارد)", "h265": "H.265 (فوق‌العاده کم‌حجم)"},
-      "crf_compression": {"light": "کاهش کم (کیفیت بالا)", "medium": "متعادل", "heavy": "کاهش زیاد (سبک)"},
-      "audio_toggle": {"mute": "🔇 صدا: قطع", "unmute": "🔊 صدا: وصل"},
-      "audio_formats": {"mp3": "MP3", "wav": "WAV (اورجینال)", "m4a": "M4A", "ogg": "OGG", "flac": "FLAC"},
-      "speed_options": {"1.0": "سرعت ۱x", "1.5": "۱.۵ برابر", "2.0": "۲ برابر"},
-      "cancel": "پشیمون شدم"
-    },
-    "default_config_keyboard": {
-      "mode_video": "🎬 تبدیل ویدیو",
-      "mode_audio": "🎵 استخراج صدا",
-      "format_original": "📁 فرمت خروجی: مثل فایل اصلی",
-      "format_mp4": "MP4",
-      "format_mkv": "MKV",
-      "format_mov": "MOV",
-      "back_to_settings": "🔙 بازگشت به تنظیمات"
-    },
-    "settings_menu": {
-      "status_full": "گزارش خروجی: کامل با مشخصات ✅",
-      "status_simple": "گزارش خروجی: فقط حجم فایل‌ها 📉",
-      "action_toggle_simple": "🔄 تغییر به: گزارش ساده",
-      "action_toggle_full": "🔄 تغییر به: گزارش کامل",
-      "open_default_settings": "🎬 تنظیمات دیفالت ویدیوها",
-      "close": "پشیمون شدم"
-    },
-    "admin_panel": {
-      "top_users": "🏆 رتبه‌بندی پرمصرف‌ترین‌ها",
-      "set_limit": "⏱ سهمیه مصرف روزانه",
-      "broadcast": "📢 پیام همگانی به همه",
-      "send_single": "👤 پیام به کاربر خاص",
-      "close": "پشیمون شدم",
-      "back_to_main": "🔙 بازگشت به پنل اصلی",
-      "back_to_panel": "🔙 بازگشت به پنل",
-      "back_to_top_users": "🔙 بازگشت به لیست پرمصرف‌ها",
-      "get_user_max_video": "🎬 دریافت و مشاهده این ویدیو",
-      "get_requested_video": "📥 دریافت این ویدیو",
-      "reply_to_user": "✍️ پاسخ به این کاربر",
-      "limit_presets": {
-        "100mb": "100 MB", "300mb": "300 MB", "500mb": "500 MB",
-        "1000mb": "1000 MB (1GB)", "2000mb": "2000 MB (2GB)",
-        "unlimited": "نامحدود ♾", "custom": "✏️ عدد دلخواه"
-      },
-      "cancel_action": "پشیمون شدم"
-    },
-    "support_and_errors": {
-      "send_support_msg": "📞 پیام به پشتیبانی",
-      "connect_support": "📞 ارتباط با پشتیبانی",
-      "reply_to_user": "✍️ پاسخ به این کاربر",
-      "cancel_support": "پشیمون شدم",
-      "error_send_video": "بله، ویدیو هم فرستاده بشه ✅",
-      "error_cancel_video": "پشیمون شدم",
-      "stop_processing": "پشیمون شدم"
-    }
-  },
-  "messages": {
-    "start_and_welcome": {
-      "welcome_text": "سلام خوشتیپ خوش اومدی\n\n🎬 هر ویدیویی داری همینجا بفرست تا با بالاترین سرعت و بهترین کیفیت برات کم‌حجم یا تبدیلش کنم (مستقیم تا سقف ۳۰۰ مگابایت).\n\nاز دکمه‌های پایین هم می‌تونی تنظیمات دلخواهت رو بچینی یا با پشتیبانی در ارتباط باشی 👇",
-      "quick_access": "📌 دسترسی سریع:"
-    },
-    "settings": {
-      "main_menu_text": "⚙️ <b>تنظیمات ربات:</b>\n━━━━━━━━━━━━━━━━━━\nاز این بخش می‌تونی نحوه نمایش گزارش و تنظیمات دیفالت ویدیوها رو تعیین کنی 👇",
-      "settings_changed_alert": "تنظیمات گزارش تغییر کرد!",
-      "default_settings_text": "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n━━━━━━━━━━━━━━━━━━\nهر تنظیمی رو اینجا انتخاب کنی، از این به بعد وقتی ویدیو بفرستی به صورت خودکار روی همین تنظیمات آماده میشه (مثلاً کدک H.265 یا کیفیت دلخواهت).\n\n💡 <i>روی هر دکمه بزنی، همون لحظه خودکار ذخیره میشه رفیق.</i>",
-      "saved_alert": "✅ ذخیره شد!"
-    },
-    "support": {
-      "prompt_message": "✍️ هر سوال، مشکل یا پیامی داری همینجا بنویس و بفرست (متن، عکس، ویس و...):",
-      "cancelled_text": "پشیمون شدم.",
-      "cancelled_alert": "لغو شد.",
-      "forwarded_to_admin_header": "📩 <b>پیام جدید از کاربر به پشتیبانی:</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>نام:</b> {name}\n🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n🔗 <b>یوزرنیم:</b> {username}\n━━━━━━━━━━━━━━━━━━\n💡 <i>برای پاسخ دادن می‌تونی روی این پیام ریپلای کنی یا دکمه زیر رو بزنی:</i>",
-      "sent_to_support_confirm": "✅ پیامت فرستاده شد واسه پشتیبانی! به زودی جوابت رو همینجا می‌دیم 💌",
-      "send_error": "⚠️ متأسفانه در ارسال پیام خطایی رخ داد. لطفاً چند لحظه بعد تلاش کن.",
-      "admin_reply_header": "💬 <b>پاسخ پشتیبانی:</b>",
-      "admin_reply_success": "✅ پاسخت با موفقیت برای کاربر فرستاده شد (هویتت کاملاً مخفی موند).",
-      "user_blocked_bot": "❌ خطا: متأسفانه کاربر ربات رو بلاک کرده.",
-      "admin_reply_error": "⚠️ خطا در ارسال:\n<code>{error}</code>"
-    },
-    "video_validation_and_prompt": {
-      "not_a_video": "⚠️ رفیق لطفاً یک فایل ویدیویی بفرست!",
-      "file_too_large": "⚠️ <b>حجم این ویدیو بیشتر از ۳۰۰ مگابایته!</b>\n\nبرای پردازش حجم‌های بالای ۳۰۰ مگابایت، لطفاً به پشتیبانی پیام بده تا هماهنگ کنیم 👇",
-      "daily_quota_exceeded": "⚠️ <b>سهمیه مصرف امروزت پر شده رفیق!</b>\n\n▫️ سقف مجاز روزانه: <b>{limit_mb} مگابایت</b>\n▫️ مصرف امروزت: <b>{cur_mb:.1f} مگابایت</b>\n▫️ حجم این ویدیو: <b>{file_size_mb:.1f} مگابایت</b>\n\nفردا سهمیه‌ت ریست میشه و می‌تونی دوباره استفاده کنی ❤️",
-      "config_prompt": "⚙️ <b>تنظیمات تبدیل ویدیو:</b>\n▫️ فرمت فایل ورودی: <b>{orig_ext}</b>\n\nهر جوری دوست داری تنظیمش کن و دکمه شروع رو بزن 👇",
-      "panel_cancelled": "پشیمون شدم."
-    },
-    "queue_and_progress": {
-      "in_queue": "⏳ <b>گذاشتمت تو صف سرور...</b>\n👥 نوبت شما: <b>نفر {queue_pos}</b>",
-      "downloading": "📥 <b>در حال دانلود از تلگرام...</b>\n{bar}",
-      "encoding_with_eta": "⚙️ <b>در حال فشرده‌سازی و انکود...</b>\n{bar}\n⏱ زمان تقریبی باقیمانده: <b>{eta}</b>",
-      "encoding": "⚙️ <b>در حال فشرده‌سازی و انکود...</b>\n{bar}",
-      "uploading": "📤 <b>کارش تموم شد، دارم برات می‌فرستمش...</b>\n{bar}",
-      "please_wait": "⏳ لطفاً کمی صبر کنید...",
-      "download_retry": "🔄 تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...",
-      "eta_format_min_sec": "{mins} دقیقه و {secs} ثانیه",
-      "eta_format_sec": "{secs} ثانیه",
-      "stopped_alert": "پردازش متوقف شد.",
-      "stopped_msg": "🛑 پردازش متوقف شد و نوبت صف آزاد گردید.",
-      "not_running_alert": "پردازشی در حال اجرا نیست.",
-      "reference_not_found": "❌ پیام ویدیوی مرجع پیدا نشد.",
-      "video_not_found": "❌ ویدیویی پیدا نشد."
-    },
-    "completion_captions": {
-      "base_caption": "✨ <b>ویدیوت با موفقیت آماده شد!</b>\n\n📦 حجم اولیه: <b>{initial_size_mb:.2f} MB</b>\n📉 حجم خروجی: <b>{final_size_mb:.2f} MB</b>\n⚡️ درصد کاهش حجم: <b>{reduction}%</b>",
-      "audio_details": "\n\n🛠 <b>مشخصات فایل:</b>\n▫️ فرمت صدا: <b>{out_ext}</b>\n▫️ نوع فایل: موزیک / پادکست",
-      "video_details": "\n\n🛠 <b>تنظیمات اعمال‌شده:</b>\n▫️ فرمت خروجی: <b>{out_ext}</b>\n▫️ رزولوشن: <b>{res_name}</b>\n▫️ نوع انکودر: <b>{codec_name}</b>\n▫️ شدت فشرده‌سازی: <b>{crf_name}</b>\n▫️ وضعیت صدا: <b>{mute_name}</b>\n▫️ سرعت پخش: <b>{speed_factor}x</b>",
-      "video_detail_values": {
-        "resolutions": {"orig": "کیفیت اصلی", "1080": "1080p", "720": "720p", "480": "480p"},
-        "codecs": {"h264": "H.264", "h265": "H.265 (کم‌حجم)"},
-        "crf": {"light": "کاهش کم (کیفیت بالا)", "medium": "متعادل", "heavy": "کاهش زیاد (سبک)"},
-        "mute_status": {"muted": "بی‌صدا 🔇", "unmuted": "همراه صدا 🔊"}
-      }
-    },
-    "admin": {
-      "main_panel_text": "👑 <b>پنل مدیریت ربات</b>\n━━━━━━━━━━━━━━━━━━\n👥 کل کاربرهای ثبت‌شده: <b>{user_count} نفر</b>\n⏱ سقف مصرف روزانه فعلی: <b>{limit_str}</b>\n━━━━━━━━━━━━━━━━━━\nیکی از گزینه‌های زیر رو انتخاب کن رفیق 👇",
-      "top_users_header": "🏆 <b>رتبه‌بندی پرمصرف‌ترین کاربران (هزینه واقعی دلاری):</b>\n",
-      "top_users_empty": "📊 هنوز کاربری در دیتابیس ثبت نشده رفیق!",
-      "top_user_row": "<b>{idx}.</b> {safe_name} | هزینه: <b>${cost:.4f}</b> ({jobs} تبدیل)",
-      "user_not_found": "اطلاعات این کاربر پیدا نشد!",
-      "user_details_text": "👤 <b>جزئیات مصرف این کاربر:</b>\n\n▫️ <b>نام:</b> {safe_name}\n▫️ <b>یوزرنیم:</b> {uname}\n▫️ <b>آیدی عددی:</b> <code>{target_uid}</code>\n▫️ <b>هزینه کل تا الان:</b> <b>${cost:.5f}</b>\n▫️ <b>تعداد تبدیل‌ها:</b> {jobs} عدد\n▫️ <b>مصرف امروز:</b> {today_mb:.1f} مگابایت\n",
-      "user_max_video_section": "\n🔥 <b>پرمصرف‌ترین ویدیویی که زده:</b>\n▫️ هزینه تبدیلش: <b>${max_cost:.5f}</b>\n▫️ حجم اولیه: {max_size:.1f} MB\n▫️ زمان تبدیل: {date}",
-      "sending_video_alert": "در حال فرستادن ویدیو...",
-      "no_video_recorded": "❌ ویدیویی واسه این کاربر ثبت نشده.",
-      "max_video_caption": "🎬 <b>پرمصرف‌ترین ویدیوی کاربر <code>{target_uid}</code>:</b>\n\n💵 هزینه دقیق پردازش: <b>${cost:.5f}</b>\n📦 حجم اولیه فایل: <b>{size_mb:.1f} MB</b>\n📅 تاریخ: <b>{date}</b>",
-      "send_file_error": "⚠️ ارسال فایل به مشکل خورد:\n<code>{error}</code>",
-      "sending_requested_video_alert": "در حال فرستادن ویدیوی کاربر...",
-      "requested_video_not_found": "❌ اطلاعات این ویدیو پیدا نشد رفیق.",
-      "requested_video_caption": "📹 <b>ویدیوی ارسالی کاربر:</b>\n👤 {name} (<code>{user_id}</code>)",
-      "send_video_error": "⚠️ خطا در ارسال ویدیو: {error}",
-      "limit_settings_text": "⏱ <b>تنظیم سهمیه مصرف روزانه کاربران (Daily Limit):</b>\n\n▫️ سقف فعلی: <b>{cur_str}</b>\n\nیکی از مقادیر زیر رو انتخاب کن یا عدد دلخواه بفرست:",
-      "limit_changed_alert": "سقف مصرف به {val_str} تغییر کرد.",
-      "ask_custom_limit": "✏️ عدد سقف مصرف روزانه رو به <b>مگابایت (MB)</b> بفرست (مثال: <code>400</code> یا برای نامحدود <code>0</code>):",
-      "limit_invalid_input": "⚠️ رفیق لطفاً فقط عدد انگلیسی وارد کن:",
-      "limit_set_success": "✅ سقف مصرف روزانه روی <b>{val_str}</b> تنظیم شد.",
-      "broadcast_prompt": "⚠️ <b>پیام همگانی:</b>\nاین پیامی که می‌فرستی برای همه ({users_count} نفر) ارسال میشه.\n\n✍️ پیام، عکس یا ویدیوی خودت رو بفرست:",
-      "broadcast_in_progress": "⏳ در حال ارسال همگانی به {users_count} کاربر... لطفاً صبر کن.",
-      "broadcast_result": "📢 <b>نتیجه ارسال همگانی:</b>\n\n✅ با موفقیت ارسال شد: <b>{success} نفر</b>\n❌ ناموفق (بلاک یا دیلیت‌اکانت): <b>{failed} نفر</b>\n📊 مجموع مخاطبان: <b>{users_count} نفر</b>",
-      "ask_single_user_id": "👤 لطفاً <b>آیدی عددی</b> کاربر رو بفرست:",
-      "prompt_reply_to_user": "✉️ هر پاسخی که می‌خوای برای کاربر <code>{target_id}</code> بره رو همینجا بنویس و بفرست:",
-      "invalid_user_id": "⚠️ رفیق لطفاً فقط شناسه عددی بفرست:",
-      "user_found_prompt": "🎯 <b>مشخصات کاربر پیدا شد:</b>\n\n👤 <b>نام:</b> {user_name}\n🔗 <b>یوزرنیم:</b> {username}\n🆔 <b>آیدی عددی:</b> <code>{target_id}</code>\n\n✉️ حالا پیام، عکس یا ویدیویی که می‌خوای واسش بره رو بفرست:",
-      "admin_message_header_to_user": "💬 <b>پیام از طرف پشتیبانی:</b>",
-      "admin_send_single_success": "✅ پیام با موفقیت واسه <b>{user_name}</b> (<code>{target_id}</code>) ارسال شد.",
-      "admin_send_single_blocked": "❌ خطا: این کاربر متأسفانه ربات رو بلاک کرده.",
-      "admin_send_single_error": "⚠️ ارسال با خطا مواجه شد:\n<code>{error}</code>",
-      "action_cancelled_alert": "لغو شد.",
-      "action_cancelled_text": "پشیمون شدم.",
-      "new_job_alert": "📹 <b>درخواست جدید پردازش ویدیو</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>نام کاربر:</b> {user_name}\n🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n🔗 <b>یوزرنیم:</b> {username}\n📦 <b>حجم فایل:</b> {file_size_mb:.2f} مگابایت\n⚙️ <b>تنظیمات:</b> <code>{mode} | {res} | {codec}</code>\n💵 <b>کل هزینه کاربر تا الان:</b> <code>${total_user_cost:.4f}</code>\n━━━━━━━━━━━━━━━━━━\n💡 <i>برای دیدن ویدیوی ارسالی کاربر، دکمه زیر رو بزن:</i>",
-      "job_completed_alert": "✅ <b>پردازش ویدیوی کاربر با موفقیت تموم شد!</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>کاربر:</b> {user_name} (<code>{user_id}</code>)\n💵 <b>هزینه واقعی این تبدیل:</b> <code>${exact_cost:.5f}</code>\n💳 <b>مجموع هزینه کاربر تا الان:</b> <code>${new_total_cost:.4f}</code>\n📦 <b>حجم خروجی فایل:</b> {final_size_mb:.2f} مگابایت"
-    },
-    "errors_and_alerts": {
-      "admin_error_report": "🚨 <b>گزارش خطای خودکار در پردازش:</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>کاربر:</b> {user_name} (<code>{user_id}</code>)\n🔗 <b>یوزرنیم:</b> {username}\n❌ <b>شرح خطا:</b> <code>{error_short}</code>\n📋 <b>لاگ سیستمی:</b>\n<pre>{log}</pre>",
-      "user_error_notice": "⚠️ ای وای! موقع فشرده‌سازی ویدیو به خطا خوردیم 😕\n\n📨 <b>توضیحات خطا برای پشتیبانی فرستاده شد.</b>\n\n❓ می‌خوای خود ویدیو رو هم بفرستم واسه ادمین تا سریع‌تر مشکلش رو برطرف کنیم؟",
-      "error_video_expired_alert": "مهلت گذشته است.",
-      "error_video_expired_text": "❌ مهلت ارسال ویدیوی این خطا گذشته است.",
-      "admin_error_video_caption": "🎥 <b>ویدیوی خطای کاربر:</b>\n👤 {user_name} | <code>{user_id}</code>",
-      "error_video_forwarded_success": "✅ دمت گرم! ویدیو همراه با لاگ برای پشتیبانی ارسال شد.",
-      "error_video_forward_failed": "⚠️ خطا در ارسال ویدیو."
-    }
-  }
-}
-
-BOT_TEXTS = dict(DEFAULT_TEXTS)
-
-
-def load_bot_texts():
-    global BOT_TEXTS
-    candidates = [
-        TEXTS_FILE,
-        os.path.join(os.path.dirname(__file__), "bot_texts.json"),
-        os.path.join(os.path.dirname(__file__), "..", "bot_texts.json"),
-        os.path.join(os.getcwd(), "bot_texts.json"),
-        "bot_texts.json"
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        BOT_TEXTS = data
-                        logging.info(f"✅ فایل bot_texts.json بارگذاری شد: {p}")
-                        return
-            except Exception as e:
-                logging.error(f"❌ خطا در بارگذاری {p}: {e}")
-    logging.info("ℹ️ استفاده از متن‌های پیش‌فرض درون‌برنامه‌ای.")
-
-
-load_bot_texts()
-
-
-def get_text(path: str, default: str = "", **kwargs):
-    keys = path.split(".")
-    val = BOT_TEXTS
-    for k in keys:
-        if isinstance(val, dict):
-            val = val.get(k)
-        else:
-            val = None
-            break
-
-    if val is None:
-        val = DEFAULT_TEXTS
-        for k in keys:
-            if isinstance(val, dict):
-                val = val.get(k)
-            else:
-                val = None
-                break
-
-    if val is None:
-        val = default
-
-    if kwargs and isinstance(val, str):
-        try:
-            return val.format(**kwargs)
-        except Exception:
-            return val
-    return val or default
-
-
-def get_random_start_phrase() -> str:
-    phrases = get_text("buttons.start_random_phrases", [])
-    if isinstance(phrases, list) and phrases:
-        return random.choice(phrases)
-    return "بزن نریم"
-
+# لیست ۱۶ عبارت برای دکمه شروع
+START_PHRASES = [
+    "بزن نریم",
+    "باشه بسته شو دیگه",
+    "حله خداحافظ",
+    "باشه",
+    "اوکی دوکی",
+    "خیلی ممنون",
+    "بسته شو",
+    "تنظیم کن",
+    "حله داداش",
+    "کاری ندارم دیگه",
+    "همین خوبه",
+    "ایول",
+    "بسته شود بلکه پسندیده شود",
+    "ترو خدا همین رو ذخیره کن",
+    "حله فدات",
+    "دمت گرم"
+]
 
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
@@ -315,6 +87,7 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
+# --- سیستم ذخیره‌سازی محلی پشتیبان ---
 def load_backup_stats() -> dict:
     if os.path.exists(BACKUP_STATS_FILE):
         try:
@@ -333,6 +106,7 @@ def save_backup_stats(stats: dict):
         logging.warning(f"Backup save error: {e}")
 
 
+# --- دیتابیس PostgreSQL ---
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
@@ -678,6 +452,7 @@ def get_cpu_seconds() -> float:
     return ru.user + ru.system + ru.children_user + ru.children_system
 
 
+# --- مدیریت کش تنظیمات و تنظیمات دیفالت کاربر ---
 def init_prefs_cache():
     global PREFS_CACHE
     if os.path.exists(PREFS_FILE):
@@ -824,10 +599,10 @@ RUNNING_TASKS = {}
 
 def get_main_reply_keyboard(user_id: int):
     builder = ReplyKeyboardBuilder()
-    builder.button(text=get_text("buttons.reply_keyboard.settings", "⚙️ تنظیمات"))
-    builder.button(text=get_text("buttons.reply_keyboard.support", "📞 ارتباط با پشتیبانی"))
+    builder.button(text="⚙️ تنظیمات")
+    builder.button(text="📞 ارتباط با پشتیبانی")
     if user_id == ADMIN_ID:
-        builder.button(text=get_text("buttons.reply_keyboard.admin_panel", "👑 پنل مدیریت"))
+        builder.button(text="👑 پنل مدیریت")
         builder.adjust(2, 1)
     else:
         builder.adjust(2)
@@ -837,23 +612,23 @@ def get_main_reply_keyboard(user_id: int):
 def get_settings_inline_keyboard(user_id: int):
     show_details = get_user_show_details(user_id)
     builder = InlineKeyboardBuilder()
-    toggle_text = get_text("buttons.settings_menu.status_full") if show_details else get_text("buttons.settings_menu.status_simple")
-    action_text = get_text("buttons.settings_menu.action_toggle_simple") if show_details else get_text("buttons.settings_menu.action_toggle_full")
+    toggle_text = "گزارش خروجی: کامل با مشخصات ✅" if show_details else "گزارش خروجی: فقط حجم فایل‌ها 📉"
+    action_text = "تغییر به: گزارش ساده" if show_details else "تغییر به: گزارش کامل"
     builder.button(text=toggle_text, callback_data="none")
-    builder.button(text=action_text, callback_data="toggle_details")
-    builder.button(text=get_text("buttons.settings_menu.open_default_settings", "🎬 تنظیمات دیفالت ویدیوها"), callback_data="open_default_settings")
-    builder.button(text=get_text("buttons.settings_menu.close", "پشیمون شدم"), callback_data="close_settings")
+    builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
+    builder.button(text="🎬 تنظیمات دیفالت ویدیوها", callback_data="open_default_settings")
+    builder.button(text="پشیمون شدم", callback_data="close_settings")
     builder.adjust(1)
     return builder.as_markup()
 
 
 def get_admin_panel_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text=get_text("buttons.admin_panel.top_users", "🏆 رتبه‌بندی پرمصرف‌ترین‌ها"), callback_data="admin_top_users")
-    builder.button(text=get_text("buttons.admin_panel.set_limit", "⏱ سهمیه مصرف روزانه"), callback_data="admin_set_limit")
-    builder.button(text=get_text("buttons.admin_panel.broadcast", "📢 پیام همگانی به همه"), callback_data="admin_broadcast")
-    builder.button(text=get_text("buttons.admin_panel.send_single", "👤 پیام به کاربر خاص"), callback_data="admin_send_single")
-    builder.button(text=get_text("buttons.admin_panel.close", "پشیمون شدم"), callback_data="admin_close")
+    builder.button(text="🏆 رتبه‌بندی پرمصرف‌ترین‌ها", callback_data="admin_top_users")
+    builder.button(text="⏱ سهمیه مصرف روزانه", callback_data="admin_set_limit")
+    builder.button(text="📢 پیام همگانی به همه", callback_data="admin_broadcast")
+    builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
+    builder.button(text="پشیمون شدم", callback_data="admin_close")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -877,46 +652,43 @@ def decode_cfg(data_str):
     }
 
 
+# کیبورد تبدیل ویدیو
 def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
     res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
 
-    b.button(text=get_text("buttons.video_config_keyboard.mode_video", "🎬 تبدیل ویدیو") + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
-    b.button(text=get_text("buttons.video_config_keyboard.mode_audio", "🎵 استخراج صدا (موزیک)") + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎬 تبدیل ویدیو" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎵 استخراج صدا (موزیک)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
-        fmt_orig_title = get_text("buttons.video_config_keyboard.format_original", orig_ext=orig_ext.upper(), default=f"📁 فرمت خروجی: مثل فایل اصلی ({orig_ext.upper()})")
-        b.button(text=fmt_orig_title + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
-        b.button(text=get_text("buttons.video_config_keyboard.format_mp4", "MP4") + (" ✅" if fmt == "mp4" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
-        b.button(text=get_text("buttons.video_config_keyboard.format_mkv", "MKV") + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
-        b.button(text=get_text("buttons.video_config_keyboard.format_mov", "MOV") + (" ✅" if fmt == "mov" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
+        # دکمه بزرگ عریض به صورت تکی در یک ردیف جداگانه با کلمه «مثل»
+        b.button(text=f"📁 فرمت خروجی: مثل فایل اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
+        b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
+        b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
+        b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
 
-        for r_k in ["orig", "1080", "720", "480"]:
-            r_t = get_text(f"buttons.video_config_keyboard.resolutions.{r_k}", r_k)
+        for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="cfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
-        b.button(text=get_text("buttons.video_config_keyboard.codecs.h264", "H.264 (استاندارد)") + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
-        b.button(text=get_text("buttons.video_config_keyboard.codecs.h265", "H.265 (فوق‌العاده کم‌حجم)") + (" ✅" if codec == "h265" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
+        b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
+        b.button(text="H.265 (فوق‌العاده کم‌حجم)" + (" ✅" if codec == "h265" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
 
-        for c_k in ["light", "medium", "heavy"]:
-            c_t = get_text(f"buttons.video_config_keyboard.crf_compression.{c_k}", c_k)
+        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (سبک)")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
 
-        mute_btn_text = get_text("buttons.video_config_keyboard.audio_toggle.mute", "🔇 صدا: قطع") if mute else get_text("buttons.video_config_keyboard.audio_toggle.unmute", "🔊 صدا: وصل")
-        b.button(text=mute_btn_text, callback_data="cfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
+        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="cfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
     else:
-        for af_k in ["mp3", "wav", "m4a", "ogg", "flac"]:
-            af_t = get_text(f"buttons.video_config_keyboard.audio_formats.{af_k}", af_k.upper())
+        for af_k, af_t in [("mp3", "MP3"), ("wav", "WAV (اورجینال)"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
             b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
 
-    for s_k in ["1.0", "1.5", "2.0"]:
-        s_t = get_text(f"buttons.video_config_keyboard.speed_options.{s_k}", f"{s_k}x")
+    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
-    start_phrase = get_random_start_phrase()
-    b.button(text=start_phrase, callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
-    b.button(text=get_text("buttons.video_config_keyboard.cancel", "پشیمون شدم"), callback_data="cancel_panel")
+    # دکمه شروع با یکی از ۱۶ عبارت رندوم و دکمه لغو دقیقاً «پشیمون شدم»
+    start_phrase = random.choice(START_PHRASES)
+    b.button(text=f"{start_phrase}", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
+    b.button(text="پشیمون شدم", callback_data="cancel_panel")
 
     if mode == "video":
         b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 2)
@@ -925,43 +697,39 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     return b.as_markup()
 
 
+# کیبورد پیش‌فرض ویدیوها
 def build_default_config_keyboard(cfg: dict):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
     res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
 
-    b.button(text=get_text("buttons.default_config_keyboard.mode_video", "🎬 تبدیل ویدیو") + (" ✅" if mode == "video" else ""), callback_data="defcfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
-    b.button(text=get_text("buttons.default_config_keyboard.mode_audio", "🎵 استخراج صدا") + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎬 تبدیل ویدیو" + (" ✅" if mode == "video" else ""), callback_data="defcfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎵 استخراج صدا" + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
-        b.button(text=get_text("buttons.default_config_keyboard.format_original", "📁 فرمت خروجی: مثل فایل اصلی") + (" ✅" if fmt == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
-        b.button(text=get_text("buttons.default_config_keyboard.format_mp4", "MP4") + (" ✅" if fmt == "mp4" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
-        b.button(text=get_text("buttons.default_config_keyboard.format_mkv", "MKV") + (" ✅" if fmt == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
-        b.button(text=get_text("buttons.default_config_keyboard.format_mov", "MOV") + (" ✅" if fmt == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
+        b.button(text="📁 فرمت خروجی: مثل فایل اصلی" + (" ✅" if fmt == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
+        b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
+        b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
+        b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
 
-        for r_k in ["orig", "1080", "720", "480"]:
-            r_t = get_text(f"buttons.video_config_keyboard.resolutions.{r_k}", r_k)
+        for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="defcfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
-        b.button(text=get_text("buttons.video_config_keyboard.codecs.h264", "H.264 (استاندارد)") + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
-        b.button(text=get_text("buttons.video_config_keyboard.codecs.h265", "H.265 (فوق‌العاده کم‌حجم)") + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
+        b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
+        b.button(text="H.265 (فوق‌العاده کم‌حجم)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
 
-        for c_k in ["light", "medium", "heavy"]:
-            c_t = get_text(f"buttons.video_config_keyboard.crf_compression.{c_k}", c_k)
+        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (سبک)")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
 
-        mute_btn_text = get_text("buttons.video_config_keyboard.audio_toggle.mute", "🔇 صدا: قطع") if mute else get_text("buttons.video_config_keyboard.audio_toggle.unmute", "🔊 صدا: وصل")
-        b.button(text=mute_btn_text, callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
+        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
     else:
-        for af_k in ["mp3", "wav", "m4a", "ogg", "flac"]:
-            af_t = get_text(f"buttons.video_config_keyboard.audio_formats.{af_k}", af_k.upper())
+        for af_k, af_t in [("mp3", "MP3"), ("wav", "WAV (اورجینال)"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
             b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
 
-    for s_k in ["1.0", "1.5", "2.0"]:
-        s_t = get_text(f"buttons.video_config_keyboard.speed_options.{s_k}", f"{s_k}x")
+    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
-    b.button(text=get_text("buttons.default_config_keyboard.back_to_settings", "🔙 بازگشت به تنظیمات"), callback_data="back_to_settings")
+    b.button(text="🔙 بازگشت به تنظیمات", callback_data="back_to_settings")
 
     if mode == "video":
         b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 1)
@@ -972,7 +740,7 @@ def build_default_config_keyboard(cfg: dict):
 
 def get_cancel_keyboard(job_id: str):
     b = InlineKeyboardBuilder()
-    b.button(text=get_text("buttons.support_and_errors.stop_processing", "پشیمون شدم"), callback_data=f"stop:{job_id}")
+    b.button(text="پشیمون شدم", callback_data=f"stop:{job_id}")
     return b.as_markup()
 
 
@@ -1025,25 +793,25 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     await state.clear()
     u = message.from_user
-    try:
-        await register_user(u.id, u.full_name or "", u.username or "")
-    except Exception as e:
-        logging.warning(f"Error registering user on start: {e}")
+    await register_user(u.id, u.full_name or "", u.username or "")
 
     builder = InlineKeyboardBuilder()
-    builder.button(text=get_text("buttons.reply_keyboard.settings", "⚙️ تنظیمات"), callback_data="open_settings")
-    builder.button(text=get_text("buttons.support_and_errors.connect_support", "📞 ارتباط با پشتیبانی"), callback_data="start_support")
+    builder.button(text="⚙️ تنظیمات", callback_data="open_settings")
+    builder.button(text="📞 ارتباط با پشتیبانی", callback_data="start_support")
     builder.adjust(2)
 
-    welcome_text = get_text("messages.start_and_welcome.welcome_text", "سلام خوشتیپ خوش اومدی")
-    quick_access = get_text("messages.start_and_welcome.quick_access", "📌 دسترسی سریع:")
+    welcome_text = (
+        "سلام خوشتیپ خوش اومدی\n\n"
+        "🎬 هر ویدیویی داری همینجا بفرست تا با بالاترین سرعت و بهترین کیفیت برات کم‌حجم یا تبدیلش کنم (مستقیم تا سقف ۳۰۰ مگابایت).\n\n"
+        "از دکمه‌های پایین هم می‌تونی تنظیمات دلخواهت رو بچینی یا با پشتیبانی در ارتباط باشی 👇"
+    )
     await message.answer(welcome_text, reply_markup=get_main_reply_keyboard(message.from_user.id))
-    await message.answer(quick_access, reply_markup=builder.as_markup())
+    await message.answer("📌 دسترسی سریع:", reply_markup=builder.as_markup())
 
 
 # --- پنل مدیریت ادمین ---
 @dp.message(Command("admin"))
-@dp.message(lambda msg: msg.text in [get_text("buttons.reply_keyboard.admin_panel"), "👑 پنل مدیریت"])
+@dp.message(F.text == "👑 پنل مدیریت")
 async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
@@ -1051,9 +819,13 @@ async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     all_users = await get_all_user_ids()
     limit = await get_daily_limit_mb()
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
-    panel_text = get_text("messages.admin.main_panel_text", user_count=len(all_users), limit_str=limit_str)
     await message.answer(
-        panel_text,
+        f"👑 <b>پنل مدیریت ربات</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👥 کل کاربرهای ثبت‌شده: <b>{len(all_users)} نفر</b>\n"
+        f"⏱ سقف مصرف روزانه فعلی: <b>{limit_str}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"یکی از گزینه‌های زیر رو انتخاب کن رفیق 👇",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="HTML"
     )
@@ -1076,21 +848,20 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
 
     top_users = await get_top_users(limit=10)
     if not top_users:
-        return await callback.message.answer(get_text("messages.admin.top_users_empty", "📊 هنوز کاربری در دیتابیس ثبت نشده رفیق!"))
+        return await callback.message.answer("📊 هنوز کاربری در دیتابیس ثبت نشده رفیق!")
 
     builder = InlineKeyboardBuilder()
-    text_lines = [get_text("messages.admin.top_users_header")]
+    text_lines = ["🏆 <b>رتبه‌بندی پرمصرف‌ترین کاربران (هزینه واقعی دلاری):</b>\n"]
 
     for idx, u in enumerate(top_users, start=1):
         safe_name = html.escape(u.get("name") or "کاربر")
         cost = float(u.get("total_cost") or 0.0)
         jobs = int(u.get("total_jobs") or 0)
         uid = u.get("user_id")
-        row_str = get_text("messages.admin.top_user_row", idx=idx, safe_name=safe_name, cost=cost, jobs=jobs)
-        text_lines.append(row_str)
+        text_lines.append(f"<b>{idx}.</b> {safe_name} | هزینه: <b>${cost:.4f}</b> ({jobs} تبدیل)")
         builder.button(text=f"{idx}. {safe_name[:12]} (${cost:.4f})", callback_data=f"adm_u_stat:{uid}")
 
-    builder.button(text=get_text("buttons.admin_panel.back_to_main", "🔙 بازگشت به پنل اصلی"), callback_data="admin_back_main")
+    builder.button(text="🔙 بازگشت به پنل اصلی", callback_data="admin_back_main")
     builder.adjust(1)
 
     await callback.message.answer("\n".join(text_lines), reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1105,7 +876,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 
     u = await get_user_stat(target_uid)
     if not u:
-        return await callback.message.answer(get_text("messages.admin.user_not_found", "اطلاعات این کاربر پیدا نشد!"))
+        return await callback.message.answer("اطلاعات این کاربر پیدا نشد!")
 
     safe_name = html.escape(u.get("name") or "نامشخص")
     uname = f"@{html.escape(u['username'])}" if u.get("username") else "ندارد"
@@ -1113,25 +884,29 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
     jobs = int(u.get("total_jobs") or 0)
     today_mb = float(u.get("today_mb") or 0.0)
 
-    text = get_text(
-        "messages.admin.user_details_text",
-        safe_name=safe_name,
-        uname=uname,
-        target_uid=target_uid,
-        cost=cost,
-        jobs=jobs,
-        today_mb=today_mb
+    text = (
+        f"👤 <b>جزئیات مصرف این کاربر:</b>\n\n"
+        f"▫️ <b>نام:</b> {safe_name}\n"
+        f"▫️ <b>یوزرنیم:</b> {uname}\n"
+        f"▫️ <b>آیدی عددی:</b> <code>{target_uid}</code>\n"
+        f"▫️ <b>هزینه کل تا الان:</b> <b>${cost:.5f}</b>\n"
+        f"▫️ <b>تعداد تبدیل‌ها:</b> {jobs} عدد\n"
+        f"▫️ <b>مصرف امروز:</b> {today_mb:.1f} مگابایت\n"
     )
 
     builder = InlineKeyboardBuilder()
     if u.get("max_vid_file_id"):
         max_cost = float(u.get("max_vid_cost") or 0.0)
         max_size = float(u.get("max_vid_size_mb") or 0.0)
-        date_str = u.get("max_vid_date") or "نامشخص"
-        text += get_text("messages.admin.user_max_video_section", max_cost=max_cost, max_size=max_size, date=date_str)
-        builder.button(text=get_text("buttons.admin_panel.get_user_max_video", "🎬 دریافت و مشاهده این ویدیو"), callback_data=f"adm_get_vid:{target_uid}")
+        text += (
+            f"\n🔥 <b>پرمصرف‌ترین ویدیویی که زده:</b>\n"
+            f"▫️ هزینه تبدیلش: <b>${max_cost:.5f}</b>\n"
+            f"▫️ حجم اولیه: {max_size:.1f} MB\n"
+            f"▫️ زمان تبدیل: {u.get('max_vid_date') or 'نامشخص'}"
+        )
+        builder.button(text="🎬 دریافت و مشاهده این ویدیو", callback_data=f"adm_get_vid:{target_uid}")
 
-    builder.button(text=get_text("buttons.admin_panel.back_to_top_users", "🔙 بازگشت به لیست پرمصرف‌ها"), callback_data="admin_top_users")
+    builder.button(text="🔙 بازگشت به لیست پرمصرف‌ها", callback_data="admin_top_users")
     builder.adjust(1)
 
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1141,19 +916,18 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
-    await callback.answer(get_text("messages.admin.sending_video_alert", "در حال فرستادن ویدیو..."))
+    await callback.answer("در حال فرستادن ویدیو...")
     target_uid = int(callback.data.split(":")[1])
 
     u = await get_user_stat(target_uid)
     if not u or not u.get("max_vid_file_id"):
-        return await callback.message.answer(get_text("messages.admin.no_video_recorded", "❌ ویدیویی واسه این کاربر ثبت نشده."))
+        return await callback.message.answer("❌ ویدیویی واسه این کاربر ثبت نشده.")
 
-    cap = get_text(
-        "messages.admin.max_video_caption",
-        target_uid=target_uid,
-        cost=float(u.get("max_vid_cost") or 0.0),
-        size_mb=float(u.get("max_vid_size_mb") or 0.0),
-        date=u.get("max_vid_date") or "نامشخص"
+    cap = (
+        f"🎬 <b>پرمصرف‌ترین ویدیوی کاربر <code>{target_uid}</code>:</b>\n\n"
+        f"💵 هزینه دقیق پردازش: <b>${float(u.get('max_vid_cost') or 0.0):.5f}</b>\n"
+        f"📦 حجم اولیه فایل: <b>{float(u.get('max_vid_size_mb') or 0.0):.1f} MB</b>\n"
+        f"📅 تاریخ: <b>{u.get('max_vid_date') or 'نامشخص'}</b>"
     )
 
     try:
@@ -1162,21 +936,24 @@ async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
         try:
             await bot.send_document(chat_id=ADMIN_ID, document=u["max_vid_file_id"], caption=cap, parse_mode="HTML")
         except Exception as e:
-            await callback.message.answer(get_text("messages.admin.send_file_error", error=html.escape(str(e))), parse_mode="HTML")
+            await callback.message.answer(f"⚠️ ارسال فایل به مشکل خورد:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("req_vid:"))
 async def send_requested_video_to_admin(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
-    await callback.answer(get_text("messages.admin.sending_requested_video_alert", "در حال فرستادن ویدیوی کاربر..."))
+    await callback.answer("در حال فرستادن ویدیوی کاربر...")
     job_id = callback.data.split(":", 1)[1]
     req = USER_REQUESTS.get(job_id)
 
     if not req:
-        return await callback.message.answer(get_text("messages.admin.requested_video_not_found", "❌ اطلاعات این ویدیو پیدا نشد رفیق."))
+        return await callback.message.answer("❌ اطلاعات این ویدیو پیدا نشد رفیق.")
 
-    cap = get_text("messages.admin.requested_video_caption", name=html.escape(req["name"]), user_id=req["user_id"])
+    cap = (
+        f"📹 <b>ویدیوی ارسالی کاربر:</b>\n"
+        f"👤 {html.escape(req['name'])} (<code>{req['user_id']}</code>)"
+    )
 
     try:
         await bot.send_video(chat_id=ADMIN_ID, video=req["file_id"], caption=cap, parse_mode="HTML")
@@ -1184,7 +961,7 @@ async def send_requested_video_to_admin(callback: aiotypes.CallbackQuery):
         try:
             await bot.send_document(chat_id=ADMIN_ID, document=req["file_id"], caption=cap, parse_mode="HTML")
         except Exception as e:
-            await callback.message.answer(get_text("messages.admin.send_video_error", error=html.escape(str(e))), parse_mode="HTML")
+            await callback.message.answer(f"⚠️ خطا در ارسال ویدیو: {html.escape(str(e))}", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "admin_set_limit")
@@ -1196,17 +973,21 @@ async def show_limit_settings(callback: aiotypes.CallbackQuery):
     cur_str = f"{cur_limit} مگابایت" if cur_limit > 0 else "نامحدود"
 
     builder = InlineKeyboardBuilder()
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.100mb", "100 MB"), callback_data="set_lim:100")
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.300mb", "300 MB"), callback_data="set_lim:300")
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.500mb", "500 MB"), callback_data="set_lim:500")
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.1000mb", "1000 MB (1GB)"), callback_data="set_lim:1000")
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.2000mb", "2000 MB (2GB)"), callback_data="set_lim:2000")
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.unlimited", "نامحدود ♾"), callback_data="set_lim:0")
-    builder.button(text=get_text("buttons.admin_panel.limit_presets.custom", "✏️ عدد دلخواه"), callback_data="set_lim_custom")
-    builder.button(text=get_text("buttons.admin_panel.back_to_panel", "🔙 بازگشت به پنل"), callback_data="admin_back_main")
+    builder.button(text="100 MB", callback_data="set_lim:100")
+    builder.button(text="300 MB", callback_data="set_lim:300")
+    builder.button(text="500 MB", callback_data="set_lim:500")
+    builder.button(text="1000 MB (1GB)", callback_data="set_lim:1000")
+    builder.button(text="2000 MB (2GB)", callback_data="set_lim:2000")
+    builder.button(text="نامحدود ♾", callback_data="set_lim:0")
+    builder.button(text="✏️ عدد دلخواه", callback_data="set_lim_custom")
+    builder.button(text="🔙 بازگشت به پنل", callback_data="admin_back_main")
     builder.adjust(3, 3, 1, 1)
 
-    text = get_text("messages.admin.limit_settings_text", cur_str=cur_str)
+    text = (
+        f"⏱ <b>تنظیم سهمیه مصرف روزانه کاربران (Daily Limit):</b>\n\n"
+        f"▫️ سقف فعلی: <b>{cur_str}</b>\n\n"
+        f"یکی از مقادیر زیر رو انتخاب کن یا عدد دلخواه بفرست:"
+    )
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
@@ -1217,7 +998,7 @@ async def apply_preset_limit(callback: aiotypes.CallbackQuery):
     val = int(callback.data.split(":")[1])
     await set_daily_limit_mb(val)
     val_str = f"{val} مگابایت" if val > 0 else "نامحدود"
-    await callback.answer(get_text("messages.admin.limit_changed_alert", val_str=val_str), show_alert=True)
+    await callback.answer(f"سقف مصرف به {val_str} تغییر کرد.", show_alert=True)
     await show_limit_settings(callback)
 
 
@@ -1227,10 +1008,10 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
         return
     await callback.answer()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text=get_text("buttons.admin_panel.cancel_action", "پشیمون شدم"), callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        get_text("messages.admin.ask_custom_limit"),
+        "✏️ عدد سقف مصرف روزانه رو به <b>مگابایت (MB)</b> بفرست (مثال: <code>400</code> یا برای نامحدود <code>0</code>):",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -1241,13 +1022,13 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
 async def process_custom_limit_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer(get_text("messages.admin.limit_invalid_input"))
+        return await message.answer("⚠️ رفیق لطفاً فقط عدد انگلیسی وارد کن:")
 
     val = int(text)
     await set_daily_limit_mb(val)
     await state.clear()
     val_str = f"{val} مگابایت" if val > 0 else "نامحدود"
-    await message.answer(get_text("messages.admin.limit_set_success", val_str=val_str), parse_mode="HTML")
+    await message.answer(f"✅ سقف مصرف روزانه روی <b>{val_str}</b> تنظیم شد.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "admin_back_main")
@@ -1259,7 +1040,12 @@ async def back_to_admin_main(callback: aiotypes.CallbackQuery, state: FSMContext
     limit = await get_daily_limit_mb()
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
     await callback.message.edit_text(
-        get_text("messages.admin.main_panel_text", user_count=len(all_users), limit_str=limit_str),
+        f"👑 <b>پنل مدیریت ربات</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👥 کل کاربرهای ثبت‌شده: <b>{len(all_users)} نفر</b>\n"
+        f"⏱ سقف مصرف روزانه فعلی: <b>{limit_str}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"یکی از گزینه‌های زیر رو انتخاب کن رفیق 👇",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="HTML"
     )
@@ -1272,10 +1058,11 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
     await callback.answer()
     users = await get_all_user_ids()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text=get_text("buttons.admin_panel.cancel_action", "پشیمون شدم"), callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        get_text("messages.admin.broadcast_prompt", users_count=len(users)),
+        f"⚠️ <b>پیام همگانی:</b>\nاین پیامی که می‌فرستی برای همه ({len(users)} نفر) ارسال میشه.\n\n"
+        f"✍️ پیام، عکس یا ویدیوی خودت رو بفرست:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -1285,7 +1072,7 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
 @dp.message(AdminMessageState.waiting_for_broadcast_content, F.chat.id == ADMIN_ID)
 async def process_broadcast(message: aiotypes.Message, state: FSMContext):
     users = await get_all_user_ids()
-    await message.answer(get_text("messages.admin.broadcast_in_progress", users_count=len(users)))
+    await message.answer(f"⏳ در حال ارسال همگانی به {len(users)} کاربر... لطفاً صبر کن.")
 
     success = 0
     failed = 0
@@ -1299,7 +1086,10 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
 
     await state.clear()
     await message.answer(
-        get_text("messages.admin.broadcast_result", success=success, failed=failed, users_count=len(users)),
+        f"📢 <b>نتیجه ارسال همگانی:</b>\n\n"
+        f"✅ با موفقیت ارسال شد: <b>{success} نفر</b>\n"
+        f"❌ ناموفق (بلاک یا دیلیت‌اکانت): <b>{failed} نفر</b>\n"
+        f"📊 مجموع مخاطبان: <b>{len(users)} نفر</b>",
         parse_mode="HTML"
     )
 
@@ -1310,10 +1100,10 @@ async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMCon
         return
     await callback.answer()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text=get_text("buttons.admin_panel.cancel_action", "پشیمون شدم"), callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        get_text("messages.admin.ask_single_user_id"),
+        "👤 لطفاً <b>آیدی عددی</b> کاربر رو بفرست:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -1329,10 +1119,10 @@ async def quick_reply_to_user(callback: aiotypes.CallbackQuery, state: FSMContex
     await state.update_data(target_id=target_id, user_name="کاربر", username="")
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text=get_text("buttons.admin_panel.cancel_action", "پشیمون شدم"), callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        get_text("messages.admin.prompt_reply_to_user", target_id=target_id),
+        f"✉️ هر پاسخی که می‌خوای برای کاربر <code>{target_id}</code> بره رو همینجا بنویس و بفرست:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -1343,7 +1133,7 @@ async def quick_reply_to_user(callback: aiotypes.CallbackQuery, state: FSMContex
 async def process_user_id_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer(get_text("messages.admin.invalid_user_id"))
+        return await message.answer("⚠️ رفیق لطفاً فقط شناسه عددی بفرست:")
 
     target_id = int(text)
     user_name = "نامشخص"
@@ -1364,13 +1154,14 @@ async def process_user_id_input(message: aiotypes.Message, state: FSMContext):
     await state.update_data(target_id=target_id, user_name=user_name, username=username)
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text=get_text("buttons.admin_panel.cancel_action", "پشیمون شدم"), callback_data="cancel_admin_action")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
 
-    confirm_text = get_text(
-        "messages.admin.user_found_prompt",
-        user_name=html.escape(user_name),
-        username=html.escape(username),
-        target_id=target_id
+    confirm_text = (
+        f"🎯 <b>مشخصات کاربر پیدا شد:</b>\n\n"
+        f"👤 <b>نام:</b> {html.escape(user_name)}\n"
+        f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+        f"🆔 <b>آیدی عددی:</b> <code>{target_id}</code>\n\n"
+        f"✉️ حالا پیام، عکس یا ویدیویی که می‌خوای واسش بره رو بفرست:"
     )
     await message.answer(confirm_text, reply_markup=cancel_b.as_markup(), parse_mode="HTML")
     await state.set_state(AdminMessageState.waiting_for_single_content)
@@ -1383,13 +1174,13 @@ async def send_single_message_to_user(message: aiotypes.Message, state: FSMConte
     user_name = data.get("user_name", "کاربر")
 
     try:
-        await bot.send_message(chat_id=target_id, text=get_text("messages.admin.admin_message_header_to_user"), parse_mode="HTML")
+        await bot.send_message(chat_id=target_id, text="💬 <b>پیام از طرف پشتیبانی:</b>", parse_mode="HTML")
         await message.copy_to(chat_id=target_id)
-        await message.answer(get_text("messages.admin.admin_send_single_success", user_name=html.escape(user_name), target_id=target_id), parse_mode="HTML")
+        await message.answer(f"✅ پیام با موفقیت واسه <b>{html.escape(user_name)}</b> (<code>{target_id}</code>) ارسال شد.", parse_mode="HTML")
     except TelegramForbiddenError:
-        await message.answer(get_text("messages.admin.admin_send_single_blocked"))
+        await message.answer("❌ خطا: این کاربر متأسفانه ربات رو بلاک کرده.")
     except Exception as e:
-        await message.answer(get_text("messages.admin.admin_send_single_error", error=html.escape(str(e))), parse_mode="HTML")
+        await message.answer(f"⚠️ ارسال با خطا مواجه شد:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
     await state.clear()
 
@@ -1399,19 +1190,23 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     if callback.from_user.id != ADMIN_ID:
         return
     await state.clear()
-    await callback.answer(get_text("messages.admin.action_cancelled_alert", "لغو شد."))
-    await callback.message.edit_text(get_text("messages.admin.action_cancelled_text", "پشیمون شدم."))
+    await callback.answer("لغو شد.")
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 # --- منوی تنظیمات و بخش تنظیمات دیفالت ویدیو ---
-@dp.message(lambda msg: msg.text in [get_text("buttons.reply_keyboard.settings"), "⚙️ تنظیمات"])
+@dp.message(F.text == "⚙️ تنظیمات")
 @dp.callback_query(F.data == "open_settings")
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
     user_id = event.from_user.id
     u = event.from_user
     await register_user(user_id, u.full_name or "", u.username or "")
 
-    text = get_text("messages.settings.main_menu_text")
+    text = (
+        "⚙️ <b>تنظیمات ربات:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "از این بخش می‌تونی نحوه نمایش گزارش و تنظیمات دیفالت ویدیوها رو تعیین کنی 👇"
+    )
     kb = get_settings_inline_keyboard(user_id)
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
@@ -1425,7 +1220,7 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     current_status = get_user_show_details(user_id)
     set_user_show_details(user_id, not current_status)
-    await callback.answer(get_text("messages.settings.settings_changed_alert", "تنظیمات گزارش تغییر کرد!"))
+    await callback.answer("تنظیمات گزارش تغییر کرد!")
     try:
         await callback.message.edit_reply_markup(reply_markup=get_settings_inline_keyboard(user_id))
     except TelegramBadRequest:
@@ -1436,7 +1231,12 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
 async def show_default_settings(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     user_cfg = get_user_default_cfg(user_id)
-    text = get_text("messages.settings.default_settings_text")
+    text = (
+        "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "هر تنظیمی رو اینجا انتخاب کنی، از این به بعد وقتی ویدیو بفرستی به صورت خودکار روی همین تنظیمات آماده میشه (مثلاً کدک H.265 یا کیفیت دلخواهت).\n\n"
+        "💡 <i>روی هر دکمه بزنی، همون لحظه خودکار ذخیره میشه رفیق.</i>"
+    )
     await callback.answer()
     await callback.message.edit_text(
         text,
@@ -1449,8 +1249,13 @@ async def show_default_settings(callback: aiotypes.CallbackQuery):
 async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
     cfg = decode_cfg(callback.data[7:])
     set_user_default_cfg(callback.from_user.id, cfg)
-    await callback.answer(get_text("messages.settings.saved_alert", "✅ ذخیره شد!"))
-    text = get_text("messages.settings.default_settings_text")
+    await callback.answer("✅ ذخیره شد!")
+    text = (
+        "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "هر تنظیمی رو اینجا انتخاب کنی، از این به بعد وقتی ویدیو بفرستی به صورت خودکار روی همین تنظیمات آماده میشه (مثلاً کدک H.265 یا کیفیت دلخواهت).\n\n"
+        "💡 <i>روی هر دکمه بزنی، همون لحظه خودکار ذخیره میشه رفیق.</i>"
+    )
     try:
         await callback.message.edit_reply_markup(reply_markup=build_default_config_keyboard(cfg))
     except TelegramBadRequest:
@@ -1460,7 +1265,11 @@ async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data == "back_to_settings")
 async def back_to_settings_menu(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
-    text = get_text("messages.settings.main_menu_text")
+    text = (
+        "⚙️ <b>تنظیمات ربات:</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "از این بخش می‌تونی نحوه نمایش گزارش و تنظیمات دیفالت ویدیوها رو تعیین کنی 👇"
+    )
     await callback.answer()
     await callback.message.edit_text(
         text,
@@ -1481,16 +1290,16 @@ async def no_action_callback(callback: aiotypes.CallbackQuery):
 
 
 # --- پشتیبانی دوطرفه ---
-@dp.message(lambda msg: msg.text in [get_text("buttons.reply_keyboard.support"), "📞 ارتباط با پشتیبانی"])
+@dp.message(F.text == "📞 ارتباط با پشتیبانی")
 @dp.callback_query(F.data == "start_support")
 async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
     u = event.from_user
     await register_user(u.id, u.full_name or "", u.username or "")
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text=get_text("buttons.support_and_errors.cancel_support", "پشیمون شدم"), callback_data="cancel_support")
+    cancel_b.button(text="پشیمون شدم", callback_data="cancel_support")
 
-    msg_text = get_text("messages.support.prompt_message")
+    msg_text = "✍️ هر سوال، مشکل یا پیامی داری همینجا بنویس و بفرست (متن، عکس، ویس و...):"
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
         await event.message.answer(msg_text, reply_markup=cancel_b.as_markup())
@@ -1503,8 +1312,8 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
 @dp.callback_query(F.data == "cancel_support")
 async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.answer(get_text("messages.support.cancelled_alert", "لغو شد."))
-    await callback.message.edit_text(get_text("messages.support.cancelled_text", "پشیمون شدم."))
+    await callback.answer("لغو شد.")
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 @dp.message(SupportState.waiting_for_message)
@@ -1515,10 +1324,18 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
     username = f"@{html.escape(u.username)}" if u.username else "ندارد"
     await register_user(user_id, u.full_name or "", u.username or "")
 
-    admin_header = get_text("messages.support.forwarded_to_admin_header", name=name, user_id=user_id, username=username)
+    admin_header = (
+        f"📩 <b>پیام جدید از کاربر به پشتیبانی:</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>نام:</b> {name}\n"
+        f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
+        f"🔗 <b>یوزرنیم:</b> {username}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <i>برای پاسخ دادن می‌تونی روی این پیام ریپلای کنی یا دکمه زیر رو بزنی:</i>"
+    )
 
     reply_kb = InlineKeyboardBuilder()
-    reply_kb.button(text=get_text("buttons.support_and_errors.reply_to_user", "✍️ پاسخ به این کاربر"), callback_data=f"reply_to_user:{user_id}")
+    reply_kb.button(text="✍️ پاسخ به این کاربر", callback_data=f"reply_to_user:{user_id}")
 
     try:
         header_msg = await bot.send_message(chat_id=ADMIN_ID, text=admin_header, reply_markup=reply_kb.as_markup(), parse_mode="HTML")
@@ -1538,10 +1355,10 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
             except Exception:
                 pass
 
-        await message.reply(get_text("messages.support.sent_to_support_confirm"))
+        await message.reply("✅ پیامت فرستاده شد واسه پشتیبانی! به زودی جوابت رو همینجا می‌دیم 💌")
     except Exception as e:
         logging.error(f"Failed to forward message to admin: {e}")
-        await message.reply(get_text("messages.support.send_error"))
+        await message.reply("⚠️ متأسفانه در ارسال پیام خطایی رخ داد. لطفاً چند لحظه بعد تلاش کن.")
 
     await state.clear()
 
@@ -1573,14 +1390,14 @@ async def handle_admin_reply(message: aiotypes.Message):
         return
 
     try:
-        await bot.send_message(chat_id=target_user_id, text=get_text("messages.support.admin_reply_header"), parse_mode="HTML")
+        await bot.send_message(chat_id=target_user_id, text="💬 <b>پاسخ پشتیبانی:</b>", parse_mode="HTML")
         await message.copy_to(chat_id=target_user_id)
-        await message.reply(get_text("messages.support.admin_reply_success"))
+        await message.reply("✅ پاسخت با موفقیت برای کاربر فرستاده شد (هویتت کاملاً مخفی موند).")
     except TelegramForbiddenError:
-        await message.reply(get_text("messages.support.user_blocked_bot"))
+        await message.reply("❌ خطا: متأسفانه کاربر ربات رو بلاک کرده.")
     except Exception as e:
         logging.error(f"Failed to send admin reply: {e}")
-        await message.reply(get_text("messages.support.admin_reply_error", error=html.escape(str(e))), parse_mode="HTML")
+        await message.reply(f"⚠️ خطا در ارسال:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("err_send_vid:"))
@@ -1589,14 +1406,14 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
     failed_job = FAILED_JOBS.pop(job_id, None)
 
     if not failed_job:
-        await callback.answer(get_text("messages.errors_and_alerts.error_video_expired_alert", "مهلت گذشته است."), show_alert=True)
-        return await callback.message.edit_text(get_text("messages.errors_and_alerts.error_video_expired_text"))
+        await callback.answer("مهلت گذشته است.", show_alert=True)
+        return await callback.message.edit_text("❌ مهلت ارسال ویدیوی این خطا گذشته است.")
 
     await callback.answer("در حال فرستادن ویدیو...")
     try:
         await bot.send_message(
             chat_id=ADMIN_ID,
-            text=get_text("messages.errors_and_alerts.admin_error_video_caption", user_name=html.escape(failed_job["user_name"]), user_id=failed_job["user_id"]),
+            text=f"🎥 <b>ویدیوی خطای کاربر:</b>\n👤 {html.escape(failed_job['user_name'])} | <code>{failed_job['user_id']}</code>",
             parse_mode="HTML"
         )
         await bot.forward_message(
@@ -1604,10 +1421,10 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
             from_chat_id=failed_job["chat_id"],
             message_id=failed_job["msg_id"]
         )
-        await callback.message.edit_text(get_text("messages.errors_and_alerts.error_video_forwarded_success"))
+        await callback.message.edit_text("✅ دمت گرم! ویدیو همراه با لاگ برای پشتیبانی ارسال شد.")
     except Exception as e:
         logging.error(f"Error forwarding video: {e}")
-        await callback.message.edit_text(get_text("messages.errors_and_alerts.error_video_forward_failed"))
+        await callback.message.edit_text("⚠️ خطا در ارسال ویدیو.")
 
 
 @dp.callback_query(F.data.startswith("err_cancel_vid:"))
@@ -1615,7 +1432,7 @@ async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
     await callback.answer("لغو شد.")
-    await callback.message.edit_text(get_text("buttons.support_and_errors.error_cancel_video", "پشیمون شدم"))
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 def detect_file_extension(message: aiotypes.Message) -> str:
@@ -1632,7 +1449,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و شروع پردازش ---
+# --- دریافت ویدیو و شروع پردازش با تنظیمات دیفالت کاربر ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1645,13 +1462,14 @@ async def handle_video(message: aiotypes.Message):
         ) else None
     )
     if not video:
-        return await message.answer(get_text("messages.video_validation_and_prompt.not_a_video"))
+        return await message.answer("⚠️ رفیق لطفاً یک فایل ویدیویی بفرست!")
 
     if video.file_size > MAX_FILE_SIZE and message.from_user.id != ADMIN_ID:
         support_kb = InlineKeyboardBuilder()
-        support_kb.button(text=get_text("buttons.support_and_errors.send_support_msg", "📞 پیام به پشتیبانی"), callback_data="start_support")
+        support_kb.button(text="📞 پیام به پشتیبانی", callback_data="start_support")
         return await message.reply(
-            get_text("messages.video_validation_and_prompt.file_too_large"),
+            "⚠️ <b>حجم این ویدیو بیشتر از ۳۰۰ مگابایته!</b>\n\n"
+            "برای پردازش حجم‌های بالای ۳۰۰ مگابایت، لطفاً به پشتیبانی پیام بده تا هماهنگ کنیم 👇",
             reply_markup=support_kb.as_markup(),
             parse_mode="HTML"
         )
@@ -1661,7 +1479,11 @@ async def handle_video(message: aiotypes.Message):
 
     if not allowed:
         return await message.answer(
-            get_text("messages.video_validation_and_prompt.daily_quota_exceeded", limit_mb=limit_mb, cur_mb=cur_mb, file_size_mb=file_size_mb),
+            f"⚠️ <b>سهمیه مصرف امروزت پر شده رفیق!</b>\n\n"
+            f"▫️ سقف مجاز روزانه: <b>{limit_mb} مگابایت</b>\n"
+            f"▫️ مصرف امروزت: <b>{cur_mb:.1f} مگابایت</b>\n"
+            f"▫️ حجم این ویدیو: <b>{file_size_mb:.1f} مگابایت</b>\n\n"
+            f"فردا سهمیه‌ت ریست میشه و می‌تونی دوباره استفاده کنی ❤️",
             parse_mode="HTML"
         )
 
@@ -1670,7 +1492,7 @@ async def handle_video(message: aiotypes.Message):
     default_cfg = dict(user_default_cfg)
 
     await message.reply(
-        get_text("messages.video_validation_and_prompt.config_prompt", orig_ext=orig_ext.upper()),
+        f"⚙️ <b>تنظیمات تبدیل ویدیو:</b>\n▫️ فرمت فایل ورودی: <b>{orig_ext.upper()}</b>\n\nهر جوری دوست داری تنظیمش کن و دکمه شروع رو بزن 👇",
         reply_markup=build_config_keyboard(default_cfg, orig_ext=orig_ext),
         parse_mode="HTML"
     )
@@ -1690,7 +1512,7 @@ async def update_settings(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data == "cancel_panel")
 async def cancel_panel(callback: aiotypes.CallbackQuery):
-    await callback.message.edit_text(get_text("messages.video_validation_and_prompt.panel_cancelled", "پشیمون شدم."))
+    await callback.message.edit_text("پشیمون شدم.")
 
 
 @dp.callback_query(F.data.startswith("stop:"))
@@ -1711,10 +1533,10 @@ async def stop_processing(callback: aiotypes.CallbackQuery):
         if task and not task.done():
             task.cancel()
 
-        await callback.answer(get_text("messages.queue_and_progress.stopped_alert", "پردازش متوقف شد."))
-        await callback.message.edit_text(get_text("messages.queue_and_progress.stopped_msg", "🛑 پردازش متوقف شد و نوبت صف آزاد گردید."))
+        await callback.answer("پردازش متوقف شد.")
+        await callback.message.edit_text("🛑 پردازش متوقف شد و نوبت صف آزاد گردید.")
     else:
-        await callback.answer(get_text("messages.queue_and_progress.not_running_alert", "پردازشی در حال اجرا نیست."), show_alert=True)
+        await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("run:"))
@@ -1723,7 +1545,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     cfg = decode_cfg(callback.data[4:])
     orig_msg = callback.message.reply_to_message
     if not orig_msg:
-        return await callback.message.edit_text(get_text("messages.queue_and_progress.reference_not_found", "❌ پیام ویدیوی مرجع پیدا نشد."))
+        return await callback.message.edit_text("❌ پیام ویدیوی مرجع پیدا نشد.")
 
     video = orig_msg.video or (
         orig_msg.document if orig_msg.document and (
@@ -1732,7 +1554,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         ) else None
     )
     if not video:
-        return await callback.message.edit_text(get_text("messages.queue_and_progress.video_not_found", "❌ ویدیویی پیدا نشد."))
+        return await callback.message.edit_text("❌ ویدیویی پیدا نشد.")
 
     orig_ext = detect_file_extension(orig_msg)
     user_id = callback.from_user.id
@@ -1753,20 +1575,21 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
 
         admin_alert_kb = InlineKeyboardBuilder()
         admin_alert_kb.button(
-            text=get_text("buttons.admin_panel.get_requested_video", "📥 دریافت این ویدیو"),
+            text="📥 دریافت این ویدیو",
             callback_data=f"req_vid:{job_id}"
         )
 
-        admin_notice = get_text(
-            "messages.admin.new_job_alert",
-            user_name=html.escape(user_name),
-            user_id=user_id,
-            username=html.escape(username),
-            file_size_mb=file_size_mb,
-            mode=cfg["mode"],
-            res=cfg["res"],
-            codec=cfg["codec"],
-            total_user_cost=total_user_cost
+        admin_notice = (
+            f"📹 <b>درخواست جدید پردازش ویدیو</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>نام کاربر:</b> {html.escape(user_name)}\n"
+            f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
+            f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+            f"📦 <b>حجم فایل:</b> {file_size_mb:.2f} مگابایت\n"
+            f"⚙️ <b>تنظیمات:</b> <code>{cfg['mode']} | {cfg['res']} | {cfg['codec']}</code>\n"
+            f"💵 <b>کل هزینه کاربر تا الان:</b> <code>${total_user_cost:.4f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💡 <i>برای دیدن ویدیوی ارسالی کاربر، دکمه زیر رو بزن:</i>"
         )
         try:
             await bot.send_message(
@@ -1779,7 +1602,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
             logging.warning(f"Failed to alert admin on request: {e}")
 
     status_msg = await callback.message.edit_text(
-        get_text("messages.queue_and_progress.in_queue", queue_pos=JOB_QUEUE.qsize() + 1),
+        f"⏳ <b>گذاشتمت تو صف سرور...</b>\n👥 نوبت شما: <b>نفر {JOB_QUEUE.qsize() + 1}</b>",
         reply_markup=get_cancel_keyboard(job_id),
         parse_mode="HTML"
     )
@@ -1824,13 +1647,13 @@ async def queue_worker():
             user_name = u.full_name if u else "نامشخص"
             username = f"@{u.username}" if (u and u.username) else "ندارد"
 
-            admin_err_alert = get_text(
-                "messages.errors_and_alerts.admin_error_report",
-                user_name=html.escape(user_name),
-                user_id=user_id,
-                username=html.escape(username),
-                error_short=html.escape(str(e)[:250]),
-                log=html.escape(clean_tb[:800])
+            admin_err_alert = (
+                f"🚨 <b>گزارش خطای خودکار در پردازش:</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>کاربر:</b> {html.escape(user_name)} (<code>{user_id}</code>)\n"
+                f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+                f"❌ <b>شرح خطا:</b> <code>{html.escape(str(e)[:250])}</code>\n"
+                f"📋 <b>لاگ سیستمی:</b>\n<pre>{html.escape(clean_tb[:800])}</pre>"
             )
             try:
                 await bot.send_message(chat_id=ADMIN_ID, text=admin_err_alert, parse_mode="HTML")
@@ -1848,11 +1671,15 @@ async def queue_worker():
             }
 
             err_kb = InlineKeyboardBuilder()
-            err_kb.button(text=get_text("buttons.support_and_errors.error_send_video", "بله، ویدیو هم فرستاده بشه ✅"), callback_data=f"err_send_vid:{job_id}")
-            err_kb.button(text=get_text("buttons.support_and_errors.error_cancel_video", "پشیمون شدم"), callback_data=f"err_cancel_vid:{job_id}")
+            err_kb.button(text="بله، ویدیو هم فرستاده بشه ✅", callback_data=f"err_send_vid:{job_id}")
+            err_kb.button(text="پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
             err_kb.adjust(1)
 
-            user_notice = get_text("messages.errors_and_alerts.user_error_notice")
+            user_notice = (
+                "⚠️ ای وای! موقع فشرده‌سازی ویدیو به خطا خوردیم 😕\n\n"
+                "📨 <b>توضیحات خطا برای پشتیبانی فرستاده شد.</b>\n\n"
+                "❓ می‌خوای خود ویدیو رو هم بفرستم واسه ادمین تا سریع‌تر مشکلش رو برطرف کنیم؟"
+            )
             try:
                 await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
             except Exception:
@@ -1873,17 +1700,17 @@ async def ui_updater(state: dict):
             bar = generate_progress_bar(state.get("percent", 0.0))
             act = state.get("action", "")
             if act == "download":
-                text = get_text("messages.queue_and_progress.downloading", bar=bar)
+                text = f"📥 <b>در حال دانلود از تلگرام...</b>\n{bar}"
             elif act == "encode":
                 eta_val = state.get("eta")
                 if state.get("file_size", 0) >= 50 * 1024 * 1024 and eta_val:
-                    text = get_text("messages.queue_and_progress.encoding_with_eta", bar=bar, eta=eta_val)
+                    text = f"⚙️ <b>در حال فشرده‌سازی و انکود...</b>\n{bar}\n⏱ زمان تقریبی باقیمانده: <b>{eta_val}</b>"
                 else:
-                    text = get_text("messages.queue_and_progress.encoding", bar=bar)
+                    text = f"⚙️ <b>در حال فشرده‌سازی و انکود...</b>\n{bar}"
             elif act == "upload":
-                text = get_text("messages.queue_and_progress.uploading", bar=bar)
+                text = f"📤 <b>کارش تموم شد، دارم برات می‌فرستمش...</b>\n{bar}"
             else:
-                text = get_text("messages.queue_and_progress.please_wait", "⏳ لطفاً کمی صبر کنید...")
+                text = "⏳ لطفاً کمی صبر کنید..."
 
             if text != last_text:
                 await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]), parse_mode="HTML")
@@ -1922,7 +1749,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
         if attempt > 1:
             try:
                 await job["status_msg"].edit_text(
-                    get_text("messages.queue_and_progress.download_retry", attempt=attempt, max_retries=max_retries),
+                    f"🔄 تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...",
                     reply_markup=get_cancel_keyboard(job["job_id"]),
                     parse_mode="HTML"
                 )
@@ -2086,6 +1913,7 @@ async def process_job(job: dict):
             elif v_codec == "libx265":
                 cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0"]
 
+            # کپی مستقیم صدا
             if cfg["mute"]:
                 cmd += ["-an"]
             elif speed_factor != 1.0:
@@ -2150,9 +1978,9 @@ async def process_job(job: dict):
                             rem_real_secs = max(0.0, eff_duration - current_secs) / render_speed
                             mins, secs = divmod(int(rem_real_secs), 60)
                             if mins > 0:
-                                ui_state["eta"] = get_text("messages.queue_and_progress.eta_format_min_sec", mins=mins, secs=secs)
+                                ui_state["eta"] = f"{mins} دقیقه و {secs} ثانیه"
                             else:
-                                ui_state["eta"] = get_text("messages.queue_and_progress.eta_format_sec", secs=secs)
+                                ui_state["eta"] = f"{secs} ثانیه"
 
         await proc.wait()
 
@@ -2178,30 +2006,34 @@ async def process_job(job: dict):
         reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
 
         show_details = get_user_show_details(user_id)
-        base_caption = get_text(
-            "messages.completion_captions.base_caption",
-            initial_size_mb=initial_size / (1024 * 1024),
-            final_size_mb=final_size / (1024 * 1024),
-            reduction=reduction
+        base_caption = (
+            f"✨ <b>ویدیوت با موفقیت آماده شد!</b>\n\n"
+            f"📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} MB</b>\n"
+            f"📉 حجم خروجی: <b>{final_size / (1024*1024):.2f} MB</b>\n"
+            f"⚡️ درصد کاهش حجم: <b>{reduction}%</b>"
         )
 
         if show_details:
             if mode == "audio":
-                summary_text = get_text("messages.completion_captions.audio_details", out_ext=out_ext.upper())
+                summary_text = (
+                    f"\n\n🛠 <b>مشخصات فایل:</b>\n"
+                    f"▫️ فرمت صدا: <b>{out_ext.upper()}</b>\n"
+                    f"▫️ نوع فایل: موزیک / پادکست"
+                )
             else:
-                res_name = get_text(f"messages.completion_captions.video_detail_values.resolutions.{cfg['res']}", cfg['res'])
-                codec_name = get_text(f"messages.completion_captions.video_detail_values.codecs.{cfg['codec']}", cfg['codec'])
-                crf_name = get_text(f"messages.completion_captions.video_detail_values.crf.{cfg['crf']}", cfg['crf'])
-                mute_name = get_text("messages.completion_captions.video_detail_values.mute_status.muted") if cfg["mute"] else get_text("messages.completion_captions.video_detail_values.mute_status.unmuted")
-
-                summary_text = get_text(
-                    "messages.completion_captions.video_details",
-                    out_ext=out_ext.upper(),
-                    res_name=res_name,
-                    codec_name=codec_name,
-                    crf_name=crf_name,
-                    mute_name=mute_name,
-                    speed_factor=speed_factor
+                res_names = {"orig": "کیفیت اصلی", "1080": "1080p", "720": "720p", "480": "480p"}
+                codec_names = {"h264": "H.264", "h265": "H.265 (کم‌حجم)"}
+                crf_names = {"light": "کاهش کم (کیفیت بالا)", "medium": "متعادل", "heavy": "کاهش زیاد (سبک)"}
+                mute_name = "بی‌صدا 🔇" if cfg["mute"] else "همراه صدا 🔊"
+                
+                summary_text = (
+                    f"\n\n🛠 <b>تنظیمات اعمال‌شده:</b>\n"
+                    f"▫️ فرمت خروجی: <b>{out_ext.upper()}</b>\n"
+                    f"▫️ رزولوشن: <b>{res_names.get(cfg['res'], cfg['res'])}</b>\n"
+                    f"▫️ نوع انکودر: <b>{codec_names.get(cfg['codec'], cfg['codec'])}</b>\n"
+                    f"▫️ شدت فشرده‌سازی: <b>{crf_names.get(cfg['crf'], cfg['crf'])}</b>\n"
+                    f"▫️ وضعیت صدا: <b>{mute_name}</b>\n"
+                    f"▫️ سرعت پخش: <b>{speed_factor}x</b>"
                 )
             caption = base_caption + summary_text
         else:
@@ -2237,6 +2069,7 @@ async def process_job(job: dict):
         ui_task.cancel()
         await status_msg.delete()
 
+        # محاسبه هزینه دقیق
         end_cpu_sec = get_cpu_seconds()
         end_wall_time = time.time()
 
@@ -2249,6 +2082,7 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
+        # ذخیره آمار در دیتابیس
         await record_job_stats(
             user_id=user_id,
             name=user_name,
@@ -2258,20 +2092,24 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
+        # ارسال پیام اعلام پایان تبدیل و هزینه دقیق برای ادمین
         if user_id != ADMIN_ID:
             u_stat_now = await get_user_stat(user_id)
             new_total_cost = float(u_stat_now.get("total_cost") or 0.0) if u_stat_now else exact_cost
 
             try:
-                alert_text = get_text(
-                    "messages.admin.job_completed_alert",
-                    user_name=html.escape(user_name),
-                    user_id=user_id,
-                    exact_cost=exact_cost,
-                    new_total_cost=new_total_cost,
-                    final_size_mb=final_size / (1024 * 1024)
+                await bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        f"✅ <b>پردازش ویدیوی کاربر با موفقیت تموم شد!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 <b>کاربر:</b> {html.escape(user_name)} (<code>{user_id}</code>)\n"
+                        f"💵 <b>هزینه واقعی این تبدیل:</b> <code>${exact_cost:.5f}</code>\n"
+                        f"💳 <b>مجموع هزینه کاربر تا الان:</b> <code>${new_total_cost:.4f}</code>\n"
+                        f"📦 <b>حجم خروجی فایل:</b> {final_size / (1024*1024):.2f} مگابایت"
+                    ),
+                    parse_mode="HTML"
                 )
-                await bot.send_message(chat_id=ADMIN_ID, text=alert_text, parse_mode="HTML")
             except Exception:
                 pass
 
@@ -2288,7 +2126,6 @@ async def process_job(job: dict):
 
 
 async def main():
-    load_bot_texts()
     init_prefs_cache()
     await init_db()
     logging.info("در حال اتصال کلاینت Pyrogram...")
