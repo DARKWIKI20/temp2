@@ -2,7 +2,7 @@
   "buttons": {
     "reply_keyboard": {
       "settings": "⚙️ تنظیمات",
-      "support": "📞 ارتباط با پشتیبانی",
+      "support": "test",
       "admin_panel": "👑 پنل مدیریت"
     },
     "start_random_phrases": [
