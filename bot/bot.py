@@ -65,7 +65,6 @@ URL_DOWNLOADS = {}
 DB_POOL = None
 PREFS_CACHE = {}
 
-# صف اولویت‌دار هوشمند به جای صف ساده
 JOB_QUEUE = asyncio.PriorityQueue()
 QUEUE_COUNTER = 0
 
@@ -86,25 +85,19 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
-# --- سیستم اولویت‌بندی هوشمند صف ---
 def calculate_priority(user_id: int, file_size_bytes: int) -> float:
-    """
-    محاسبه اولویت (اولویت کمتر = پردازش سریع‌تر):
-    - ادمین بالاترین اولویت را دارد.
-    - فایل‌های زیر ۱۰ مگابایت فوراً خارج از نوبت ویدیوهای سنگین پردازش می‌شوند.
-    """
     if user_id == ADMIN_ID:
         return -1000.0
 
     size_mb = file_size_bytes / (1024 * 1024)
     if size_mb <= 10:
-        return size_mb  # اولویت ۱ تا ۱۰ (بسیار سریع)
+        return size_mb
     elif size_mb <= 30:
-        return 50.0 + size_mb  # اولویت متوسط رو به بالا
+        return 50.0 + size_mb
     elif size_mb <= 100:
         return 150.0 + size_mb
     else:
-        return 400.0 + size_mb  # فایل‌های سنگین
+        return 400.0 + size_mb
 
 
 def load_backup_stats() -> dict:
@@ -516,6 +509,7 @@ def set_user_default_cfg(user_id: int, cfg: dict):
     save_prefs()
 
 
+# تابع اصلاح‌شده ذخیره فایل در کلاینت پایروگرام
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -567,11 +561,11 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             )
                         )
                     else:
+                        # در SaveFilePart نباید آرگومان file_total_parts ارسال شود
                         await self.invoke(
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
-                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -832,6 +826,7 @@ async def handle_url_message(message: aiotypes.Message):
         "url": url,
         "user_id": u.id,
         "name": u.full_name or "کاربر",
+        "username": f"@{u.username}" if u.username else "ندارد",
         "chat_id": message.chat.id
     }
 
@@ -869,6 +864,9 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
 
     url = item["url"]
     chat_id = item["chat_id"]
+    user_id = item["user_id"]
+    user_name = item["name"]
+    username = item.get("username", "ندارد")
     out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
 
     status_msg = await callback.message.edit_text(
@@ -888,16 +886,17 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         url
     ]
 
+    downloaded_file = None
+    thumb_path = None
+
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         _, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            err_text = stderr.decode(errors="ignore")[-200:]
-            raise RuntimeError(f"خطای دانلود با yt-dlp: {err_text}")
+            err_text = stderr.decode(errors="ignore")[-300:]
+            raise RuntimeError(f"خطای yt-dlp: {err_text}")
 
-        # پیدا کردن فایل دانلود شده
-        downloaded_file = None
         for fname in os.listdir(DOWNLOAD_DIR):
             if fname.startswith(f"ytdl_{token}") and not fname.endswith(".part"):
                 downloaded_file = os.path.join(DOWNLOAD_DIR, fname)
@@ -920,14 +919,13 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
 
         await status_msg.edit_text("📤 دانلود از منبع تموم شد؛ در حال ارسال ویدیو...")
 
-        # کیبورد پیروگرام همراه با دکمه فشرده‌سازی زیر ویدیو
         sent_video = await pyro.send_video(
             chat_id=chat_id,
             video=downloaded_file,
             duration=meta["duration"],
             width=meta["width"],
             height=meta["height"],
-            thumb=thumb_path if os.path.exists(thumb_path) else None,
+            thumb=thumb_path if (os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100) else None,
             caption=f"🎬 <b>ویدیوی شما با کیفیت {quality}p دریافت شد!</b>\n📦 حجم: <b>{fsize / (1024*1024):.2f} MB</b>",
             reply_markup=PyroInlineKeyboardMarkup([[
                 PyroInlineKeyboardButton("🗜 فشرده‌سازی و تبدیل این ویدیو", callback_data=f"compress_from_dl:{token}")
@@ -936,26 +934,51 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
 
         await status_msg.delete()
 
-        # ثبت موقت ویدیوی ارسالی برای تبدیل مجدد در صورت درخواست
         USER_REQUESTS[f"dl_msg_{token}"] = {
             "file_id": sent_video.video.file_id,
-            "user_id": item["user_id"],
-            "name": item["name"],
+            "user_id": user_id,
+            "name": user_name,
             "chat_id": chat_id,
             "message_id": sent_video.id
         }
 
-        # پاک‌سازی فایل‌های محلی موقت پس از آپلود
+    except Exception as e:
+        tb = traceback.format_exc()
+        logging.error(f"yt-dlp error: {tb}")
+
+        tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
+        clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
+
+        admin_err_alert = (
+            f"🚨 <b>گزارش خطای خودکار در دریافت لینک (yt-dlp / Upload):</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>کاربر:</b> {html.escape(user_name)} (<code>{user_id}</code>)\n"
+            f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+            f"🌐 <b>لینک ارسالی:</b> <code>{html.escape(url[:150])}</code>\n"
+            f"❌ <b>شرح خطا:</b> <code>{html.escape(str(e)[:250])}</code>\n"
+            f"📋 <b>لاگ سیستمی:</b>\n<pre>{html.escape(clean_tb[:800])}</pre>"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=admin_err_alert, parse_mode="HTML")
+        except Exception as adm_err:
+            logging.error(f"Failed to alert admin on ytdl error: {adm_err}")
+
+        try:
+            await status_msg.edit_text(
+                f"⚠️ متأسفانه دانلود با خطا مواجه شد:\n<code>{html.escape(str(e)[:200])}</code>\n\n"
+                f"📨 <b>گزارش کامل و لاگ این خطا برای پشتیبانی ارسال گردید.</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    finally:
         for p in (downloaded_file, thumb_path):
-            if os.path.exists(p):
+            if p and os.path.exists(p):
                 try:
                     os.remove(p)
                 except OSError:
                     pass
-
-    except Exception as e:
-        logging.error(f"yt-dlp error: {e}")
-        await status_msg.edit_text(f"⚠️ متأسفانه دانلود با خطا مواجه شد:\n<code>{html.escape(str(e)[:250])}</code>", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("compress_from_dl:"))
@@ -1762,7 +1785,6 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         except Exception as e:
             logging.warning(f"Failed to alert admin on request: {e}")
 
-    # تعیین اولویت هوشمند و قرارگیری در صف
     priority = calculate_priority(user_id, video.file_size)
     QUEUE_COUNTER += 1
 
@@ -2068,7 +2090,6 @@ async def process_job(job: dict):
                 "-i", input_path
             ]
 
-            # اضافه کردن استریم بی‌صدا اگر ویدیو فاقد صداست تا گیف نشود
             if not include_real_audio:
                 cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
