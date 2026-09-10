@@ -1,0 +1,235 @@
+{
+  "buttons": {
+    "reply_keyboard": {
+      "settings": "⚙️ تنظیمات",
+      "support": "📞 ارتباط با پشتیبانی",
+      "admin_panel": "👑 پنل مدیریت"
+    },
+    "start_random_phrases": [
+      "بزن نریم",
+      "باشه بسته شو دیگه",
+      "حله خداحافظ",
+      "باشه",
+      "اوکی دوکی",
+      "خیلی ممنون",
+      "بسته شو",
+      "تنظیم کن",
+      "حله داداش",
+      "کاری ندارم دیگه",
+      "همین خوبه",
+      "ایول",
+      "بسته شود بلکه پسندیده شود",
+      "ترو خدا همین رو ذخیره کن",
+      "حله فدات",
+      "دمت گرم"
+    ],
+    "video_config_keyboard": {
+      "mode_video": "🎬 تبدیل ویدیو",
+      "mode_audio": "🎵 استخراج صدا (موزیک)",
+      "format_original": "📁 فرمت خروجی: مثل فایل اصلی ({orig_ext})",
+      "format_mp4": "MP4",
+      "format_mkv": "MKV",
+      "format_mov": "MOV",
+      "resolutions": {
+        "orig": "کیفیت اصلی",
+        "1080": "1080p",
+        "720": "720p",
+        "480": "480p"
+      },
+      "codecs": {
+        "h264": "H.264 (استاندارد)",
+        "h265": "H.265 (فوق‌العاده کم‌حجم)"
+      },
+      "crf_compression": {
+        "light": "کاهش کم (کیفیت بالا)",
+        "medium": "متعادل",
+        "heavy": "کاهش زیاد (سبک)"
+      },
+      "audio_toggle": {
+        "mute": "🔇 صدا: قطع",
+        "unmute": "🔊 صدا: وصل"
+      },
+      "audio_formats": {
+        "mp3": "MP3",
+        "wav": "WAV (اورجینال)",
+        "m4a": "M4A",
+        "ogg": "OGG",
+        "flac": "FLAC"
+      },
+      "speed_options": {
+        "1.0": "سرعت ۱x",
+        "1.5": "۱.۵ برابر",
+        "2.0": "۲ برابر"
+      },
+      "cancel": "پشیمون شدم"
+    },
+    "default_config_keyboard": {
+      "mode_video": "🎬 تبدیل ویدیو",
+      "mode_audio": "🎵 استخراج صدا",
+      "format_original": "📁 فرمت خروجی: مثل فایل اصلی",
+      "format_mp4": "MP4",
+      "format_mkv": "MKV",
+      "format_mov": "MOV",
+      "back_to_settings": "🔙 بازگشت به تنظیمات"
+    },
+    "settings_menu": {
+      "status_full": "گزارش خروجی: کامل با مشخصات ✅",
+      "status_simple": "گزارش خروجی: فقط حجم فایل‌ها 📉",
+      "action_toggle_simple": "🔄 تغییر به: گزارش ساده",
+      "action_toggle_full": "🔄 تغییر به: گزارش کامل",
+      "open_default_settings": "🎬 تنظیمات دیفالت ویدیوها",
+      "close": "پشیمون شدم"
+    },
+    "admin_panel": {
+      "top_users": "🏆 رتبه‌بندی پرمصرف‌ترین‌ها",
+      "set_limit": "⏱ سهمیه مصرف روزانه",
+      "broadcast": "📢 پیام همگانی به همه",
+      "send_single": "👤 پیام به کاربر خاص",
+      "close": "پشیمون شدم",
+      "back_to_main": "🔙 بازگشت به پنل اصلی",
+      "back_to_panel": "🔙 بازگشت به پنل",
+      "back_to_top_users": "🔙 بازگشت به لیست پرمصرف‌ها",
+      "get_user_max_video": "🎬 دریافت و مشاهده این ویدیو",
+      "get_requested_video": "📥 دریافت این ویدیو",
+      "reply_to_user": "✍️ پاسخ به این کاربر",
+      "limit_presets": {
+        "100mb": "100 MB",
+        "300mb": "300 MB",
+        "500mb": "500 MB",
+        "1000mb": "1000 MB (1GB)",
+        "2000mb": "2000 MB (2GB)",
+        "unlimited": "نامحدود ♾",
+        "custom": "✏️ عدد دلخواه"
+      },
+      "cancel_action": "پشیمون شدم"
+    },
+    "support_and_errors": {
+      "send_support_msg": "📞 پیام به پشتیبانی",
+      "connect_support": "📞 ارتباط با پشتیبانی",
+      "reply_to_user": "✍️ پاسخ به این کاربر",
+      "cancel_support": "پشیمون شدم",
+      "error_send_video": "بله، ویدیو هم فرستاده بشه ✅",
+      "error_cancel_video": "پشیمون شدم",
+      "stop_processing": "پشیمون شدم"
+    }
+  },
+  "messages": {
+    "start_and_welcome": {
+      "welcome_text": "سلام خوشتیپ خوش اومدی\n\n🎬 هر ویدیویی داری همینجا بفرست تا با بالاترین سرعت و بهترین کیفیت برات کم‌حجم یا تبدیلش کنم (مستقیم تا سقف ۳۰۰ مگابایت).\n\nاز دکمه‌های پایین هم می‌تونی تنظیمات دلخواهت رو بچینی یا با پشتیبانی در ارتباط باشی 👇",
+      "quick_access": "📌 دسترسی سریع:"
+    },
+    "settings": {
+      "main_menu_text": "⚙️ <b>تنظیمات ربات:</b>\n━━━━━━━━━━━━━━━━━━\nاز این بخش می‌تونی نحوه نمایش گزارش و تنظیمات دیفالت ویدیوها رو تعیین کنی 👇",
+      "settings_changed_alert": "تنظیمات گزارش تغییر کرد!",
+      "default_settings_text": "🎬 <b>تنظیمات دیفالت ویدیوها:</b>\n━━━━━━━━━━━━━━━━━━\nهر تنظیمی رو اینجا انتخاب کنی، از این به بعد وقتی ویدیو بفرستی به صورت خودکار روی همین تنظیمات آماده میشه (مثلاً کدک H.265 یا کیفیت دلخواهت).\n\n💡 <i>روی هر دکمه بزنی، همون لحظه خودکار ذخیره میشه رفیق.</i>",
+      "saved_alert": "✅ ذخیره شد!"
+    },
+    "support": {
+      "prompt_message": "✍️ هر سوال، مشکل یا پیامی داری همینجا بنویس و بفرست (متن، عکس، ویس و...):",
+      "cancelled_text": "پشیمون شدم.",
+      "cancelled_alert": "لغو شد.",
+      "forwarded_to_admin_header": "📩 <b>پیام جدید از کاربر به پشتیبانی:</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>نام:</b> {name}\n🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n🔗 <b>یوزرنیم:</b> {username}\n━━━━━━━━━━━━━━━━━━\n💡 <i>برای پاسخ دادن می‌تونی روی این پیام ریپلای کنی یا دکمه زیر رو بزنی:</i>",
+      "sent_to_support_confirm": "✅ پیامت فرستاده شد واسه پشتیبانی! به زودی جوابت رو همینجا می‌دیم 💌",
+      "send_error": "⚠️ متأسفانه در ارسال پیام خطایی رخ داد. لطفاً چند لحظه بعد تلاش کن.",
+      "admin_reply_header": "💬 <b>پاسخ پشتیبانی:</b>",
+      "admin_reply_success": "✅ پاسخت با موفقیت برای کاربر فرستاده شد (هویتت کاملاً مخفی موند).",
+      "user_blocked_bot": "❌ خطا: متأسفانه کاربر ربات رو بلاک کرده.",
+      "admin_reply_error": "⚠️ خطا در ارسال:\n<code>{error}</code>"
+    },
+    "video_validation_and_prompt": {
+      "not_a_video": "⚠️ رفیق لطفاً یک فایل ویدیویی بفرست!",
+      "file_too_large": "⚠️ <b>حجم این ویدیو بیشتر از ۳۰۰ مگابایته!</b>\n\nبرای پردازش حجم‌های بالای ۳۰۰ مگابایت، لطفاً به پشتیبانی پیام بده تا هماهنگ کنیم 👇",
+      "daily_quota_exceeded": "⚠️ <b>سهمیه مصرف امروزت پر شده رفیق!</b>\n\n▫️ سقف مجاز روزانه: <b>{limit_mb} مگابایت</b>\n▫️ مصرف امروزت: <b>{cur_mb:.1f} مگابایت</b>\n▫️ حجم این ویدیو: <b>{file_size_mb:.1f} مگابایت</b>\n\nفردا سهمیه‌ت ریست میشه و می‌تونی دوباره استفاده کنی ❤️",
+      "config_prompt": "⚙️ <b>تنظیمات تبدیل ویدیو:</b>\n▫️ فرمت فایل ورودی: <b>{orig_ext}</b>\n\nهر جوری دوست داری تنظیمش کن و دکمه شروع رو بزن 👇",
+      "panel_cancelled": "پشیمون شدم."
+    },
+    "queue_and_progress": {
+      "in_queue": "⏳ <b>گذاشتمت تو صف سرور...</b>\n👥 نوبت شما: <b>نفر {queue_pos}</b>",
+      "downloading": "📥 <b>در حال دانلود از تلگرام...</b>\n{bar}",
+      "encoding_with_eta": "⚙️ <b>در حال فشرده‌سازی و انکود...</b>\n{bar}\n⏱ زمان تقریبی باقیمانده: <b>{eta}</b>",
+      "encoding": "⚙️ <b>در حال فشرده‌سازی و انکود...</b>\n{bar}",
+      "uploading": "📤 <b>کارش تموم شد، دارم برات می‌فرستمش...</b>\n{bar}",
+      "please_wait": "⏳ لطفاً کمی صبر کنید...",
+      "download_retry": "🔄 تلاش مجدد برای دریافت فایل ({attempt}/{max_retries})...",
+      "eta_format_min_sec": "{mins} دقیقه و {secs} ثانیه",
+      "eta_format_sec": "{secs} ثانیه",
+      "stopped_alert": "پردازش متوقف شد.",
+      "stopped_msg": "🛑 پردازش متوقف شد و نوبت صف آزاد گردید.",
+      "not_running_alert": "پردازشی در حال اجرا نیست.",
+      "reference_not_found": "❌ پیام ویدیوی مرجع پیدا نشد.",
+      "video_not_found": "❌ ویدیویی پیدا نشد."
+    },
+    "completion_captions": {
+      "base_caption": "✨ <b>ویدیوت با موفقیت آماده شد!</b>\n\n📦 حجم اولیه: <b>{initial_size_mb:.2f} MB</b>\n📉 حجم خروجی: <b>{final_size_mb:.2f} MB</b>\n⚡️ درصد کاهش حجم: <b>{reduction}%</b>",
+      "audio_details": "\n\n🛠 <b>مشخصات فایل:</b>\n▫️ فرمت صدا: <b>{out_ext}</b>\n▫️ نوع فایل: موزیک / پادکست",
+      "video_details": "\n\n🛠 <b>تنظیمات اعمال‌شده:</b>\n▫️ فرمت خروجی: <b>{out_ext}</b>\n▫️ رزولوشن: <b>{res_name}</b>\n▫️ نوع انکودر: <b>{codec_name}</b>\n▫️ شدت فشرده‌سازی: <b>{crf_name}</b>\n▫️ وضعیت صدا: <b>{mute_name}</b>\n▫️ سرعت پخش: <b>{speed_factor}x</b>",
+      "video_detail_values": {
+        "resolutions": {
+          "orig": "کیفیت اصلی",
+          "1080": "1080p",
+          "720": "720p",
+          "480": "480p"
+        },
+        "codecs": {
+          "h264": "H.264",
+          "h265": "H.265 (کم‌حجم)"
+        },
+        "crf": {
+          "light": "کاهش کم (کیفیت بالا)",
+          "medium": "متعادل",
+          "heavy": "کاهش زیاد (سبک)"
+        },
+        "mute_status": {
+          "muted": "بی‌صدا 🔇",
+          "unmuted": "همراه صدا 🔊"
+        }
+      }
+    },
+    "admin": {
+      "main_panel_text": "👑 <b>پنل مدیریت ربات</b>\n━━━━━━━━━━━━━━━━━━\n👥 کل کاربرهای ثبت‌شده: <b>{user_count} نفر</b>\n⏱ سقف مصرف روزانه فعلی: <b>{limit_str}</b>\n━━━━━━━━━━━━━━━━━━\nیکی از گزینه‌های زیر رو انتخاب کن رفیق 👇",
+      "top_users_header": "🏆 <b>رتبه‌بندی پرمصرف‌ترین کاربران (هزینه واقعی دلاری):</b>\n",
+      "top_users_empty": "📊 هنوز کاربری در دیتابیس ثبت نشده رفیق!",
+      "top_user_row": "<b>{idx}.</b> {safe_name} | هزینه: <b>${cost:.4f}</b> ({jobs} تبدیل)",
+      "user_not_found": "اطلاعات این کاربر پیدا نشد!",
+      "user_details_text": "👤 <b>جزئیات مصرف این کاربر:</b>\n\n▫️ <b>نام:</b> {safe_name}\n▫️ <b>یوزرنیم:</b> {uname}\n▫️ <b>آیدی عددی:</b> <code>{target_uid}</code>\n▫️ <b>هزینه کل تا الان:</b> <b>${cost:.5f}</b>\n▫️ <b>تعداد تبدیل‌ها:</b> {jobs} عدد\n▫️ <b>مصرف امروز:</b> {today_mb:.1f} مگابایت\n",
+      "user_max_video_section": "\n🔥 <b>پرمصرف‌ترین ویدیویی که زده:</b>\n▫️ هزینه تبدیلش: <b>${max_cost:.5f}</b>\n▫️ حجم اولیه: {max_size:.1f} MB\n▫️ زمان تبدیل: {date}",
+      "sending_video_alert": "در حال فرستادن ویدیو...",
+      "no_video_recorded": "❌ ویدیویی واسه این کاربر ثبت نشده.",
+      "max_video_caption": "🎬 <b>پرمصرف‌ترین ویدیوی کاربر <code>{target_uid}</code>:</b>\n\n💵 هزینه دقیق پردازش: <b>${cost:.5f}</b>\n📦 حجم اولیه فایل: <b>{size_mb:.1f} MB</b>\n📅 تاریخ: <b>{date}</b>",
+      "send_file_error": "⚠️ ارسال فایل به مشکل خورد:\n<code>{error}</code>",
+      "sending_requested_video_alert": "در حال فرستادن ویدیوی کاربر...",
+      "requested_video_not_found": "❌ اطلاعات این ویدیو پیدا نشد رفیق.",
+      "requested_video_caption": "📹 <b>ویدیوی ارسالی کاربر:</b>\n👤 {name} (<code>{user_id}</code>)",
+      "send_video_error": "⚠️ خطا در ارسال ویدیو: {error}",
+      "limit_settings_text": "⏱ <b>تنظیم سهمیه مصرف روزانه کاربران (Daily Limit):</b>\n\n▫️ سقف فعلی: <b>{cur_str}</b>\n\nیکی از مقادیر زیر رو انتخاب کن یا عدد دلخواه بفرست:",
+      "limit_changed_alert": "سقف مصرف به {val_str} تغییر کرد.",
+      "ask_custom_limit": "✏️ عدد سقف مصرف روزانه رو به <b>مگابایت (MB)</b> بفرست (مثال: <code>400</code> یا برای نامحدود <code>0</code>):",
+      "limit_invalid_input": "⚠️ رفیق لطفاً فقط عدد انگلیسی وارد کن:",
+      "limit_set_success": "✅ سقف مصرف روزانه روی <b>{val_str}</b> تنظیم شد.",
+      "broadcast_prompt": "⚠️ <b>پیام همگانی:</b>\nاین پیامی که می‌فرستی برای همه ({users_count} نفر) ارسال میشه.\n\n✍️ پیام، عکس یا ویدیوی خودت رو بفرست:",
+      "broadcast_in_progress": "⏳ در حال ارسال همگانی به {users_count} کاربر... لطفاً صبر کن.",
+      "broadcast_result": "📢 <b>نتیجه ارسال همگانی:</b>\n\n✅ با موفقیت ارسال شد: <b>{success} نفر</b>\n❌ ناموفق (بلاک یا دیلیت‌اکانت): <b>{failed} نفر</b>\n📊 مجموع مخاطبان: <b>{users_count} نفر</b>",
+      "ask_single_user_id": "👤 لطفاً <b>آیدی عددی</b> کاربر رو بفرست:",
+      "prompt_reply_to_user": "✉️ هر پاسخی که می‌خوای برای کاربر <code>{target_id}</code> بره رو همینجا بنویس و بفرست:",
+      "invalid_user_id": "⚠️ رفیق لطفاً فقط شناسه عددی بفرست:",
+      "user_found_prompt": "🎯 <b>مشخصات کاربر پیدا شد:</b>\n\n👤 <b>نام:</b> {user_name}\n🔗 <b>یوزرنیم:</b> {username}\n🆔 <b>آیدی عددی:</b> <code>{target_id}</code>\n\n✉️ حالا پیام، عکس یا ویدیویی که می‌خوای واسش بره رو بفرست:",
+      "admin_message_header_to_user": "💬 <b>پیام از طرف پشتیبانی:</b>",
+      "admin_send_single_success": "✅ پیام با موفقیت واسه <b>{user_name}</b> (<code>{target_id}</code>) ارسال شد.",
+      "admin_send_single_blocked": "❌ خطا: این کاربر متأسفانه ربات رو بلاک کرده.",
+      "admin_send_single_error": "⚠️ ارسال با خطا مواجه شد:\n<code>{error}</code>",
+      "action_cancelled_alert": "لغو شد.",
+      "action_cancelled_text": "پشیمون شدم.",
+      "new_job_alert": "📹 <b>درخواست جدید پردازش ویدیو</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>نام کاربر:</b> {user_name}\n🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n🔗 <b>یوزرنیم:</b> {username}\n📦 <b>حجم فایل:</b> {file_size_mb:.2f} مگابایت\n⚙️ <b>تنظیمات:</b> <code>{mode} | {res} | {codec}</code>\n💵 <b>کل هزینه کاربر تا الان:</b> <code>${total_user_cost:.4f}</code>\n━━━━━━━━━━━━━━━━━━\n💡 <i>برای دیدن ویدیوی ارسالی کاربر، دکمه زیر رو بزن:</i>",
+      "job_completed_alert": "✅ <b>پردازش ویدیوی کاربر با موفقیت تموم شد!</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>کاربر:</b> {user_name} (<code>{user_id}</code>)\n💵 <b>هزینه واقعی این تبدیل:</b> <code>${exact_cost:.5f}</code>\n💳 <b>مجموع هزینه کاربر تا الان:</b> <code>${new_total_cost:.4f}</code>\n📦 <b>حجم خروجی فایل:</b> {final_size_mb:.2f} مگابایت"
+    },
+    "errors_and_alerts": {
+      "admin_error_report": "🚨 <b>گزارش خطای خودکار در پردازش:</b>\n━━━━━━━━━━━━━━━━━━\n👤 <b>کاربر:</b> {user_name} (<code>{user_id}</code>)\n🔗 <b>یوزرنیم:</b> {username}\n❌ <b>شرح خطا:</b> <code>{error_short}</code>\n📋 <b>لاگ سیستمی:</b>\n<pre>{log}</pre>",
+      "user_error_notice": "⚠️ ای وای! موقع فشرده‌سازی ویدیو به خطا خوردیم 😕\n\n📨 <b>توضیحات خطا برای پشتیبانی فرستاده شد.</b>\n\n❓ می‌خوای خود ویدیو رو هم بفرستم واسه ادمین تا سریع‌تر مشکلش رو برطرف کنیم؟",
+      "error_video_expired_alert": "مهلت گذشته است.",
+      "error_video_expired_text": "❌ مهلت ارسال ویدیوی این خطا گذشته است.",
+      "admin_error_video_caption": "🎥 <b>ویدیوی خطای کاربر:</b>\n👤 {user_name} | <code>{user_id}</code>",
+      "error_video_forwarded_success": "✅ دمت گرم! ویدیو همراه با لاگ برای پشتیبانی ارسال شد.",
+      "error_video_forward_failed": "⚠️ خطا در ارسال ویدیو."
+    }
+  }
+}
