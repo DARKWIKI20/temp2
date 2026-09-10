@@ -37,7 +37,6 @@ MAX_FILE_SIZE = 300 * 1024 * 1024  # سقف ۳۰۰ مگابایت
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
 
-# لیست ۱۶ عبارت برای دکمه شروع
 START_PHRASES = [
     "بزن نریم",
     "باشه بسته شو دیگه",
@@ -87,7 +86,6 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
 
 
-# --- سیستم ذخیره‌سازی محلی پشتیبان ---
 def load_backup_stats() -> dict:
     if os.path.exists(BACKUP_STATS_FILE):
         try:
@@ -106,7 +104,6 @@ def save_backup_stats(stats: dict):
         logging.warning(f"Backup save error: {e}")
 
 
-# --- دیتابیس PostgreSQL ---
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
@@ -452,7 +449,6 @@ def get_cpu_seconds() -> float:
     return ru.user + ru.system + ru.children_user + ru.children_system
 
 
-# --- مدیریت کش تنظیمات و تنظیمات دیفالت کاربر ---
 def init_prefs_cache():
     global PREFS_CACHE
     if os.path.exists(PREFS_FILE):
@@ -561,6 +557,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
+                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -652,7 +649,6 @@ def decode_cfg(data_str):
     }
 
 
-# کیبورد تبدیل ویدیو
 def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
@@ -662,7 +658,6 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b.button(text="🎵 استخراج صدا (موزیک)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
-        # دکمه بزرگ عریض به صورت تکی در یک ردیف جداگانه با کلمه «مثل»
         b.button(text=f"📁 فرمت خروجی: مثل فایل اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
         b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
@@ -685,7 +680,6 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
-    # دکمه شروع با یکی از ۱۶ عبارت رندوم و دکمه لغو دقیقاً «پشیمون شدم»
     start_phrase = random.choice(START_PHRASES)
     b.button(text=f"{start_phrase}", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
     b.button(text="پشیمون شدم", callback_data="cancel_panel")
@@ -697,7 +691,6 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     return b.as_markup()
 
 
-# کیبورد پیش‌فرض ویدیوها
 def build_default_config_keyboard(cfg: dict):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
@@ -745,11 +738,11 @@ def get_cancel_keyboard(job_id: str):
 
 
 async def get_media_meta(file_path: str) -> dict:
-    meta = {"duration": 0, "width": 1280, "height": 720}
+    meta = {"duration": 0, "width": 1280, "height": 720, "has_audio": False}
     try:
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "stream=width,height,duration:format=duration",
+            "-show_entries", "stream=width,height,duration,codec_type:format=duration",
             "-of", "json", file_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -761,12 +754,15 @@ async def get_media_meta(file_path: str) -> dict:
 
         if "streams" in data:
             for s in data["streams"]:
-                if "width" in s and "height" in s:
-                    meta["width"] = int(s["width"])
-                    meta["height"] = int(s["height"])
+                c_type = s.get("codec_type")
+                if c_type == "video":
+                    if "width" in s and "height" in s:
+                        meta["width"] = int(s["width"])
+                        meta["height"] = int(s["height"])
                     if meta["duration"] == 0 and "duration" in s:
                         meta["duration"] = int(float(s["duration"]))
-                    break
+                elif c_type == "audio":
+                    meta["has_audio"] = True
     except Exception as e:
         logging.warning(f"Metadata read error: {e}")
     return meta
@@ -809,7 +805,6 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     await message.answer("📌 دسترسی سریع:", reply_markup=builder.as_markup())
 
 
-# --- پنل مدیریت ادمین ---
 @dp.message(Command("admin"))
 @dp.message(F.text == "👑 پنل مدیریت")
 async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
@@ -1194,7 +1189,6 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     await callback.message.edit_text("پشیمون شدم.")
 
 
-# --- منوی تنظیمات و بخش تنظیمات دیفالت ویدیو ---
 @dp.message(F.text == "⚙️ تنظیمات")
 @dp.callback_query(F.data == "open_settings")
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
@@ -1289,7 +1283,6 @@ async def no_action_callback(callback: aiotypes.CallbackQuery):
     await callback.answer()
 
 
-# --- پشتیبانی دوطرفه ---
 @dp.message(F.text == "📞 ارتباط با پشتیبانی")
 @dp.callback_query(F.data == "start_support")
 async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
@@ -1449,7 +1442,6 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و شروع پردازش با تنظیمات دیفالت کاربر ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1861,16 +1853,16 @@ async def process_job(job: dict):
 
         in_meta = await get_media_meta(input_path)
         duration = in_meta["duration"]
+        has_audio = in_meta.get("has_audio", False)
         eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
-        cmd = [
-            FFMPEG_BIN, "-y",
-            "-threads", "1",
-            "-i", input_path,
-            "-max_muxing_queue_size", "1024"
-        ]
-
         if mode == "audio":
+            cmd = [
+                FFMPEG_BIN, "-y",
+                "-threads", "1",
+                "-i", input_path,
+                "-max_muxing_queue_size", "1024"
+            ]
             if out_ext == "mp3":
                 cmd += ["-vn", "-c:a", "libmp3lame", "-b:a", "192k"]
             elif out_ext == "wav":
@@ -1890,6 +1882,21 @@ async def process_job(job: dict):
         else:
             crf_map = {"light": "23", "medium": "28", "heavy": "34"}
             v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
+
+            # اگر فایل صدا داشت و کاربر بی‌صدا نخواست: صدای اصلی را نگه می‌داریم
+            # در غیر این صورت: یک لاین صدای بی‌صدا تزریق می‌کنیم تا تلگرام هرگز آن را به گیف تبدیل نکند
+            include_real_audio = has_audio and not cfg["mute"]
+
+            cmd = [
+                FFMPEG_BIN, "-y",
+                "-threads", "1",
+                "-i", input_path
+            ]
+
+            if not include_real_audio:
+                cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+
+            cmd += ["-max_muxing_queue_size", "1024"]
 
             vf = []
             if speed_factor != 1.0:
@@ -1913,13 +1920,13 @@ async def process_job(job: dict):
             elif v_codec == "libx265":
                 cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0"]
 
-            # کپی مستقیم صدا
-            if cfg["mute"]:
-                cmd += ["-an"]
-            elif speed_factor != 1.0:
-                cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-filter:a", f"atempo={speed_factor}"]
+            if include_real_audio:
+                if speed_factor != 1.0:
+                    cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "128k", "-filter:a", f"atempo={speed_factor}"]
+                else:
+                    cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "128k"]
             else:
-                cmd += ["-map", "0:a:0?", "-c:a", "copy"]
+                cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "32k", "-shortest"]
 
             cmd += ["-avoid_negative_ts", "make_zero"]
 
@@ -1992,7 +1999,7 @@ async def process_job(job: dict):
             raise RuntimeError(f"خطای FFmpeg ({proc.returncode}):\n{err_details}")
 
         out_meta = await get_media_meta(output_path)
-        out_dur = out_meta["duration"] or int(eff_duration)
+        out_dur = max(1, out_meta["duration"] or int(eff_duration))
         out_w = out_meta["width"]
         out_h = out_meta["height"]
 
@@ -2069,7 +2076,6 @@ async def process_job(job: dict):
         ui_task.cancel()
         await status_msg.delete()
 
-        # محاسبه هزینه دقیق
         end_cpu_sec = get_cpu_seconds()
         end_wall_time = time.time()
 
@@ -2082,7 +2088,6 @@ async def process_job(job: dict):
         network_cost = egress_gb * 0.05
         exact_cost = cpu_cost + ram_cost + network_cost
 
-        # ذخیره آمار در دیتابیس
         await record_job_stats(
             user_id=user_id,
             name=user_name,
@@ -2092,7 +2097,6 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
-        # ارسال پیام اعلام پایان تبدیل و هزینه دقیق برای ادمین
         if user_id != ADMIN_ID:
             u_stat_now = await get_user_stat(user_id)
             new_total_cost = float(u_stat_now.get("total_cost") or 0.0) if u_stat_now else exact_cost
