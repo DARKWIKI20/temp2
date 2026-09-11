@@ -15,6 +15,7 @@ import traceback
 import subprocess
 
 import asyncpg
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types as aiotypes
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart, Command
@@ -72,6 +73,22 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
+
+
+# --- وب‌سرور داخلی برای Render ---
+async def health_check(request):
+    return web.Response(text="Bot is running smoothly!")
+
+
+async def start_dummy_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"✅ وب‌سرور داخلی رندر روی پورت {port} فعال شد.")
 
 
 class SupportState(StatesGroup):
@@ -509,7 +526,6 @@ def set_user_default_cfg(user_id: int, cfg: dict):
     save_prefs()
 
 
-# تابع اصلاح‌شده ذخیره فایل در کلاینت پایروگرام
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -561,7 +577,6 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             )
                         )
                     else:
-                        # در SaveFilePart نباید آرگومان file_total_parts ارسال شود
                         await self.invoke(
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
@@ -2329,6 +2344,8 @@ async def process_job(job: dict):
 async def main():
     init_prefs_cache()
     await init_db()
+    await start_dummy_server()
+
     logging.info("در حال اتصال کلاینت Pyrogram...")
     try:
         await pyro.start()
