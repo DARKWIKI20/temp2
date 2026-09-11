@@ -2349,28 +2349,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-@dp.message(Command("backup"), F.from_user.id == ADMIN_ID)
-async def export_db_to_admin(message: aiotypes.Message):
-    if not DB_POOL:
-        return await message.answer("دیتابیس متصل نیست.")
-    
-    async with DB_POOL.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM user_stats;")
-        tickets = await conn.fetch("SELECT * FROM support_tickets;")
-    
-    data = {
-        "user_stats": [dict(r) for r in rows],
-        "support_tickets": [dict(t) for t in tickets]
-    }
-    
-    # تبدیل تاریخ‌ها به رشته برای فرمت JSON
-    backup_file = "database_dump.json"
-    with open(backup_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-    
-    await message.reply_document(
-        document=aiotypes.FSInputFile(backup_file),
-        caption="📦 بکاپ کامل دیتابیس شما"
-    )
