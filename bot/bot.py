@@ -143,6 +143,7 @@ async def init_db():
                 VALUES ('daily_limit_mb', '500')
                 ON CONFLICT (key) DO NOTHING;
             """)
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_stats (
                     user_id BIGINT PRIMARY KEY,
@@ -158,6 +159,7 @@ async def init_db():
                     max_vid_date TEXT
                 );
             """)
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     admin_msg_id BIGINT PRIMARY KEY,
@@ -509,7 +511,6 @@ def set_user_default_cfg(user_id: int, cfg: dict):
     save_prefs()
 
 
-# تابع اصلاح‌شده ذخیره فایل در کلاینت پایروگرام
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
     if not path:
         return None
@@ -561,7 +562,6 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             )
                         )
                     else:
-                        # در SaveFilePart نباید آرگومان file_total_parts ارسال شود
                         await self.invoke(
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
@@ -615,7 +615,7 @@ def get_settings_inline_keyboard(user_id: int):
     builder.button(text=toggle_text, callback_data="none")
     builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
     builder.button(text="🎬 تنظیمات دیفالت ویدیوها", callback_data="open_default_settings")
-    builder.button(text="پشیمون شدم", callback_data="close_settings")
+    builder.button(text="🔴 پشیمون شدم", callback_data="close_settings")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -626,7 +626,7 @@ def get_admin_panel_keyboard():
     builder.button(text="⏱ سهمیه مصرف روزانه", callback_data="admin_set_limit")
     builder.button(text="📢 پیام همگانی به همه", callback_data="admin_broadcast")
     builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
-    builder.button(text="پشیمون شدم", callback_data="admin_close")
+    builder.button(text="🔴 پشیمون شدم", callback_data="admin_close")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -682,8 +682,8 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
     start_phrase = random.choice(START_PHRASES)
-    b.button(text=f"{start_phrase}", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
-    b.button(text="پشیمون شدم", callback_data="cancel_panel")
+    b.button(text=f"🟢 {start_phrase}", callback_data=f"run:{encode_cfg(mode, res, codec, crf, mute, speed, fmt)}")
+    b.button(text="🔴 پشیمون شدم", callback_data="cancel_panel")
 
     if mode == "video":
         b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 2)
@@ -723,7 +723,7 @@ def build_default_config_keyboard(cfg: dict):
     for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
-    b.button(text="🔙 بازگشت به تنظیمات", callback_data="back_to_settings")
+    b.button(text="🔴 بازگشت به تنظیمات", callback_data="back_to_settings")
 
     if mode == "video":
         b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 1)
@@ -734,7 +734,7 @@ def build_default_config_keyboard(cfg: dict):
 
 def get_cancel_keyboard(job_id: str):
     b = InlineKeyboardBuilder()
-    b.button(text="پشیمون شدم", callback_data=f"stop:{job_id}")
+    b.button(text="🔴 پشیمون شدم", callback_data=f"stop:{job_id}")
     return b.as_markup()
 
 
@@ -808,7 +808,6 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     await message.answer("📌 دسترسی سریع:", reply_markup=builder.as_markup())
 
 
-# --- مدیریت لینک‌ها و دانلود از یوتیوب و شبکه‌های اجتماعی با yt-dlp ---
 URL_REGEX = re.compile(r'(https?://[^\s]+)')
 
 @dp.message(F.text.regexp(URL_REGEX))
@@ -833,7 +832,7 @@ async def handle_url_message(message: aiotypes.Message):
     builder = InlineKeyboardBuilder()
     builder.button(text="🎬 کیفیت 720p", callback_data=f"ytdl:{token}:720")
     builder.button(text="📱 کیفیت 480p", callback_data=f"ytdl:{token}:480")
-    builder.button(text="پشیمون شدم", callback_data=f"ytdl_cancel:{token}")
+    builder.button(text="🔴 پشیمون شدم", callback_data=f"ytdl_cancel:{token}")
     builder.adjust(2, 1)
 
     await message.reply(
@@ -928,7 +927,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             thumb=thumb_path if (os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100) else None,
             caption=f"🎬 <b>ویدیوی شما با کیفیت {quality}p دریافت شد!</b>\n📦 حجم: <b>{fsize / (1024*1024):.2f} MB</b>",
             reply_markup=PyroInlineKeyboardMarkup([[
-                PyroInlineKeyboardButton("🗜 فشرده‌سازی و تبدیل این ویدیو", callback_data=f"compress_from_dl:{token}")
+                PyroInlineKeyboardButton("🟢 🗜 فشرده‌سازی و تبدیل این ویدیو", callback_data=f"compress_from_dl:{token}")
             ]])
         )
 
@@ -1001,7 +1000,6 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     )
 
 
-# --- پنل مدیریت ادمین ---
 @dp.message(Command("admin"))
 @dp.message(F.text == "👑 پنل مدیریت")
 async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
@@ -1053,7 +1051,7 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
         text_lines.append(f"<b>{idx}.</b> {safe_name} | هزینه: <b>${cost:.4f}</b> ({jobs} تبدیل)")
         builder.button(text=f"{idx}. {safe_name[:12]} (${cost:.4f})", callback_data=f"adm_u_stat:{uid}")
 
-    builder.button(text="🔙 بازگشت به پنل اصلی", callback_data="admin_back_main")
+    builder.button(text="🔴 بازگشت به پنل اصلی", callback_data="admin_back_main")
     builder.adjust(1)
 
     await callback.message.answer("\n".join(text_lines), reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1098,7 +1096,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
         )
         builder.button(text="🎬 دریافت و مشاهده این ویدیو", callback_data=f"adm_get_vid:{target_uid}")
 
-    builder.button(text="🔙 بازگشت به لیست پرمصرف‌ها", callback_data="admin_top_users")
+    builder.button(text="🔴 بازگشت به لیست پرمصرف‌ها", callback_data="admin_top_users")
     builder.adjust(1)
 
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1172,7 +1170,7 @@ async def show_limit_settings(callback: aiotypes.CallbackQuery):
     builder.button(text="2000 MB (2GB)", callback_data="set_lim:2000")
     builder.button(text="نامحدود ♾", callback_data="set_lim:0")
     builder.button(text="✏️ عدد دلخواه", callback_data="set_lim_custom")
-    builder.button(text="🔙 بازگشت به پنل", callback_data="admin_back_main")
+    builder.button(text="🔴 بازگشت به پنل", callback_data="admin_back_main")
     builder.adjust(3, 3, 1, 1)
 
     text = (
@@ -1200,7 +1198,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
         return
     await callback.answer()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
+    cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         "✏️ عدد سقف مصرف روزانه رو به <b>مگابایت (MB)</b> بفرست (مثال: <code>400</code> یا برای نامحدود <code>0</code>):",
@@ -1250,7 +1248,7 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
     await callback.answer()
     users = await get_all_user_ids()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
+    cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         f"⚠️ <b>پیام همگانی:</b>\nاین پیامی که می‌فرستی برای همه ({len(users)} نفر) ارسال میشه.\n\n"
@@ -1292,7 +1290,7 @@ async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMCon
         return
     await callback.answer()
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
+    cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         "👤 لطفاً <b>آیدی عددی</b> کاربر رو بفرست:",
@@ -1311,7 +1309,7 @@ async def quick_reply_to_user(callback: aiotypes.CallbackQuery, state: FSMContex
     await state.update_data(target_id=target_id, user_name="کاربر", username="")
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
+    cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_admin_action")
 
     await callback.message.answer(
         f"✉️ هر پاسخی که می‌خوای برای کاربر <code>{target_id}</code> بره رو همینجا بنویس و بفرست:",
@@ -1346,7 +1344,7 @@ async def process_user_id_input(message: aiotypes.Message, state: FSMContext):
     await state.update_data(target_id=target_id, user_name=user_name, username=username)
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="پشیمون شدم", callback_data="cancel_admin_action")
+    cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_admin_action")
 
     confirm_text = (
         f"🎯 <b>مشخصات کاربر پیدا شد:</b>\n\n"
@@ -1481,7 +1479,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
     await register_user(u.id, u.full_name or "", u.username or "")
 
     cancel_b = InlineKeyboardBuilder()
-    cancel_b.button(text="پشیمون شدم", callback_data="cancel_support")
+    cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_support")
 
     msg_text = "✍️ هر سوال، مشکل یا پیامی داری همینجا بنویس و بفرست (متن، عکس، ویس و...):"
     if isinstance(event, aiotypes.CallbackQuery):
@@ -1863,8 +1861,8 @@ async def queue_worker():
             }
 
             err_kb = InlineKeyboardBuilder()
-            err_kb.button(text="بله، ویدیو هم فرستاده بشه ✅", callback_data=f"err_send_vid:{job_id}")
-            err_kb.button(text="پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
+            err_kb.button(text="🟢 بله، ویدیو هم فرستاده بشه ✅", callback_data=f"err_send_vid:{job_id}")
+            err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
             err_kb.adjust(1)
 
             user_notice = (
