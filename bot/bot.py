@@ -29,15 +29,16 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- متغیرهای سیستمی و پیکربندی ---
-BOT_VERSION = "2.3.0"
+BOT_VERSION = "2.3.1"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
 API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+TEHRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 FFMPEG_BIN = "ffmpeg"
-MAX_FILE_SIZE = 300 * 1024 * 1024  # سقف ۳۰۰ مگابایت
+MAX_FILE_SIZE = 300 * 1024 * 1024
 DOWNLOAD_DIR = "downloads"
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
@@ -88,11 +89,12 @@ class AdminMessageState(StatesGroup):
     waiting_for_single_content = State()
     waiting_for_broadcast_content = State()
     waiting_for_custom_limit = State()
+    waiting_for_reset_confirmation = State()
 
 
-# --- محاسبات زمان و تقویم ---
+# --- محاسبات زمان و تاریخ تهران ---
 def get_tehran_datetime() -> tuple[str, str]:
-    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3, minutes=30)))
+    now = datetime.datetime.now(TEHRAN_TZ)
     time_str = now.strftime("%H:%M")
     
     gy, gm, gd = now.year, now.month, now.day
@@ -115,6 +117,10 @@ def get_tehran_datetime() -> tuple[str, str]:
         
     date_str = f"{jy}/{jm:02d}/{jd:02d}"
     return time_str, date_str
+
+
+def get_tehran_date() -> datetime.date:
+    return datetime.datetime.now(TEHRAN_TZ).date()
 
 
 def format_seconds(seconds: int) -> str:
@@ -250,6 +256,33 @@ async def set_daily_limit_mb(limit_mb: int):
     save_backup_stats(stats)
 
 
+async def reset_all_daily_usage():
+    today = get_tehran_date()
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute("UPDATE user_stats SET today_mb = 0.0, today_date = $1;", today)
+        except Exception as e:
+            logging.error(f"Reset DB usage error: {e}")
+
+    stats = load_backup_stats()
+    for u in stats.get("users", {}).values():
+        u["today_mb"] = 0.0
+        u["today_date"] = today.isoformat()
+    save_backup_stats(stats)
+
+
+async def midnight_reset_worker():
+    while True:
+        now = datetime.datetime.now(TEHRAN_TZ)
+        tomorrow = now.date() + datetime.timedelta(days=1)
+        midnight = datetime.datetime.combine(tomorrow, datetime.time.min, tzinfo=TEHRAN_TZ)
+        secs = (midnight - now).total_seconds()
+        await asyncio.sleep(max(1.0, secs + 2.0))
+        await reset_all_daily_usage()
+        logging.info("Daily quota automatically reset at Tehran midnight.")
+
+
 async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tuple[bool, float, int]:
     if user_id == ADMIN_ID:
         return True, 0.0, 0
@@ -258,7 +291,7 @@ async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tup
     if limit == 0:
         return True, 0.0, 0
 
-    today = datetime.date.today()
+    today = get_tehran_date()
     current_mb = 0.0
 
     if DB_POOL:
@@ -281,8 +314,8 @@ async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tup
 
 
 async def record_job_stats(user_id: int, name: str, username: str, cost: float, file_size_mb: float, file_id: str):
-    today = datetime.date.today()
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    today = get_tehran_date()
+    now_str = datetime.datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M")
 
     if DB_POOL:
         try:
@@ -364,7 +397,7 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
 
 
 async def register_user(user_id: int, name: str = "", username: str = ""):
-    today = datetime.date.today()
+    today = get_tehran_date()
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as conn:
@@ -457,6 +490,7 @@ async def get_top_users(limit: int = 10) -> list[dict]:
 
 
 async def get_user_stat(user_id: int) -> dict | None:
+    today = get_tehran_date()
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as conn:
@@ -466,6 +500,7 @@ async def get_user_stat(user_id: int) -> dict | None:
                            COALESCE(username, '') as username, 
                            CAST(COALESCE(total_cost, 0.0) AS FLOAT) as total_cost, 
                            CAST(COALESCE(total_jobs, 0) AS INT) as total_jobs, 
+                           today_date,
                            CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb, 
                            max_vid_file_id, 
                            CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
@@ -475,7 +510,10 @@ async def get_user_stat(user_id: int) -> dict | None:
                     WHERE user_id = $1;
                 """, user_id)
                 if row:
-                    return dict(row)
+                    res = dict(row)
+                    if res.get("today_date") != today:
+                        res["today_mb"] = 0.0
+                    return res
         except Exception:
             pass
 
@@ -483,13 +521,14 @@ async def get_user_stat(user_id: int) -> dict | None:
     if not u:
         return None
     mv = u.get("max_video") or {}
+    user_today_mb = float(u.get("today_mb") or 0.0) if u.get("today_date") == today.isoformat() else 0.0
     return {
         "user_id": user_id,
         "name": u.get("name") or "کاربر",
         "username": u.get("username") or "",
         "total_cost": float(u.get("total_cost") or 0.0),
         "total_jobs": int(u.get("total_jobs") or 0),
-        "today_mb": float(u.get("today_mb") or 0.0),
+        "today_mb": user_today_mb,
         "max_vid_file_id": mv.get("file_id"),
         "max_vid_cost": float(mv.get("cost") or 0.0),
         "max_vid_size_mb": float(mv.get("size_mb") or 0.0),
@@ -1318,8 +1357,9 @@ async def show_limit_settings(callback: aiotypes.CallbackQuery):
     builder.button(text="2000 MB (2GB)", callback_data="set_lim:2000")
     builder.button(text="نامحدود ♾", callback_data="set_lim:0")
     builder.button(text="✏️ مقدار دلخواه", callback_data="set_lim_custom")
+    builder.button(text="🔄 ریست کردن سهمیه", callback_data="admin_reset_quota_prompt")
     builder.button(text="🔴 بازگشت به پنل", callback_data="admin_back_main")
-    builder.adjust(3, 3, 1, 1)
+    builder.adjust(3, 3, 1, 1, 1)
 
     text = (
         f"⏱ <b>تنظیم سهمیه مصرف روزانه کاربران:</b>\n\n"
@@ -1338,6 +1378,36 @@ async def apply_preset_limit(callback: aiotypes.CallbackQuery):
     val_str = f"{val} مگابایت" if val > 0 else "نامحدود"
     await callback.answer(f"سقف مصرف روزانه روی {val_str} تنظیم شد.", show_alert=True)
     await show_limit_settings(callback)
+
+
+@dp.callback_query(F.data == "admin_reset_quota_prompt")
+async def prompt_reset_quota(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 انصراف", callback_data="cancel_admin_action")
+
+    await callback.message.answer(
+        "⚠️ <b>هشدار ریست سهمیه روزانه</b>\n\n"
+        "برای مطمئن شدن بنویس:\n"
+        "<code>ریست کردن</code>",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_reset_confirmation)
+
+
+@dp.message(AdminMessageState.waiting_for_reset_confirmation, F.chat.id == ADMIN_ID)
+async def process_reset_quota_confirmation(message: aiotypes.Message, state: FSMContext):
+    text = message.text.strip() if message.text else ""
+    if text == "ریست کردن":
+        await reset_all_daily_usage()
+        await state.clear()
+        await message.answer("✅ سهمیه مصرف روزانه تمامی کاربران با موفقیت ریست شد.", parse_mode="HTML")
+    else:
+        await state.clear()
+        await message.answer("❌ عبارت تأیید ارسال نشد. عملیات لغو شد.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "set_lim_custom")
@@ -2674,7 +2744,7 @@ async def process_job(job: dict):
             if proc.returncode != 0:
                 raise RuntimeError("خطا در پردازش فایل صوتی")
 
-        # تصویر (فایل خام)
+        # تصویر
         elif media_type == "image":
             icfg = job["image_cfg"]
             q_map = {"light": "2", "medium": "5", "heavy": "10"}
@@ -2844,7 +2914,6 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
-        # ارسال لاگ ادمین
         if user_id != ADMIN_ID:
             admin_finish_kb = InlineKeyboardBuilder()
             admin_finish_kb.button(text="🎬 دریافت فایل بهینه‌شده", callback_data=f"adm_comp:{token}")
@@ -2909,6 +2978,7 @@ async def main():
         logging.error(f"Pyrogram start error: {e}")
 
     asyncio.create_task(queue_worker())
+    asyncio.create_task(midnight_reset_worker())
     logging.info(f"Bot v{BOT_VERSION} is now online.")
     
     try:
