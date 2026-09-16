@@ -29,7 +29,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- متغیرهای سیستمی و پیکربندی ---
-BOT_VERSION = "2.1.2"
+BOT_VERSION = "2.1.3"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
@@ -70,6 +70,7 @@ URL_DOWNLOADS = {}
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
 ADMIN_MEDIA_STORE = {}
+VIDEO_META_CACHE = {}
 DB_POOL = None
 PREFS_CACHE = {}
 
@@ -709,10 +710,15 @@ def decode_cfg(data_str):
     }
 
 
-def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
+def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
     res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
+
+    # جلوگیری از انتخاب رزولوشن بالاتر از رزولوشن ورودی
+    if res.isdigit() and int(res) > max_res:
+        res = "orig"
+        cfg["res"] = "orig"
 
     b.button(text="🎬 تبدیل و فشرده‌سازی" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
     b.button(text="🎵 فقط صدا (MP3)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
@@ -723,7 +729,12 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
         b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
 
-        for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
+        res_options = [("orig", "کیفیت اصلی")]
+        for r_val, r_label in [("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
+            if int(r_val) <= max_res:
+                res_options.append((r_val, r_label))
+
+        for r_k, r_t in res_options:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="cfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
         b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
@@ -745,7 +756,8 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     b.button(text="🔴 پشیمون شدم", callback_data="cancel_panel")
 
     if mode == "video":
-        b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 2)
+        num_res = len(res_options)
+        b.adjust(2, 1, 3, num_res, 2, 3, 1, 3, 2)
     else:
         b.adjust(2, 5, 3, 2)
     return b.as_markup()
@@ -941,6 +953,9 @@ async def handle_url_message(message: aiotypes.Message):
     url = match.group(1).strip()
 
     token = uuid.uuid4().hex[:8]
+    if len(URL_DOWNLOADS) > 300:
+        URL_DOWNLOADS.pop(next(iter(URL_DOWNLOADS)))
+
     URL_DOWNLOADS[token] = {
         "url": url,
         "user_id": u.id,
@@ -1016,7 +1031,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             raise RuntimeError(f"yt-dlp failure: {err_text[-400:]}")
 
         for fname in os.listdir(DOWNLOAD_DIR):
-            if fname.startswith(f"ytdl_{token}") and not fname.endswith(".part"):
+            if fname.startswith(f"ytdl_{token}") and not fname.endswith((".part", ".ytdl")):
                 downloaded_file = os.path.join(DOWNLOAD_DIR, fname)
                 break
 
@@ -1055,7 +1070,8 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             "user_id": user_id,
             "name": user_name,
             "chat_id": chat_id,
-            "message_id": sent_video.id
+            "message_id": sent_video.id,
+            "max_res": int(quality)
         }
 
     except Exception as e:
@@ -1101,13 +1117,24 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
 
     user_default_cfg = get_user_default_cfg(callback.from_user.id)
     default_cfg = dict(user_default_cfg)
+    dl_max_res = saved_req.get("max_res", 720)
 
-    await callback.message.reply(
+    if default_cfg.get("res", "orig").isdigit() and int(default_cfg["res"]) > dl_max_res:
+        default_cfg["res"] = "orig"
+
+    sent_panel = await callback.message.reply(
         "⚙️ <b>تنظیمات پردازش ویدیو:</b>\n"
         "تنظیمات دلخواهت رو اعمال کن و دکمه شروع رو بزن 👇",
-        reply_markup=build_config_keyboard(default_cfg, orig_ext="mp4"),
+        reply_markup=build_config_keyboard(default_cfg, orig_ext="mp4", max_res=dl_max_res),
         parse_mode="HTML"
     )
+
+    if len(VIDEO_META_CACHE) > 500:
+        VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
+    VIDEO_META_CACHE[sent_panel.message_id] = {
+        "orig_ext": "mp4",
+        "max_res": dl_max_res
+    }
 
 
 # --- دریافت فایل توسط ادمین از طریق لاگ‌ها ---
@@ -1798,6 +1825,21 @@ async def handle_video(message: aiotypes.Message):
     user_default_cfg = get_user_default_cfg(message.from_user.id)
     default_cfg = dict(user_default_cfg)
 
+    # محاسبه و استخراج رزولوشن ویدیو برای جلوگیری از ارتقای مقیاس (Upscaling)
+    max_res = 1080
+    if message.video:
+        w = message.video.width or 0
+        h = message.video.height or 0
+        if w > 0 and h > 0:
+            max_res = min(w, h)
+        elif h > 0:
+            max_res = h
+        elif w > 0:
+            max_res = w
+
+    if default_cfg.get("res", "orig").isdigit() and int(default_cfg["res"]) > max_res:
+        default_cfg["res"] = "orig"
+
     duration_text = format_seconds(video.duration) if hasattr(video, "duration") and video.duration else "نامشخص"
 
     info_card = (
@@ -1807,21 +1849,29 @@ async def handle_video(message: aiotypes.Message):
         f"👇 <i>تنظیمات دلخواه را انتخاب نموده و شروع را لمس کنید:</i>"
     )
 
-    await message.reply(
+    sent_panel = await message.reply(
         info_card,
-        reply_markup=build_config_keyboard(default_cfg, orig_ext=orig_ext),
+        reply_markup=build_config_keyboard(default_cfg, orig_ext=orig_ext, max_res=max_res),
         parse_mode="HTML"
     )
+
+    if len(VIDEO_META_CACHE) > 500:
+        VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
+    VIDEO_META_CACHE[sent_panel.message_id] = {
+        "orig_ext": orig_ext,
+        "max_res": max_res
+    }
 
 
 @dp.callback_query(F.data.startswith("cfg:"))
 async def update_settings(callback: aiotypes.CallbackQuery):
     await callback.answer()
     cfg = decode_cfg(callback.data[4:])
-    orig_msg = callback.message.reply_to_message
-    orig_ext = detect_file_extension(orig_msg) if orig_msg else "mp4"
+    panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
+    orig_ext = panel_meta.get("orig_ext") or detect_file_extension(callback.message.reply_to_message) or "mp4"
+    max_res = panel_meta.get("max_res", 1080)
     try:
-        await callback.message.edit_reply_markup(reply_markup=build_config_keyboard(cfg, orig_ext=orig_ext))
+        await callback.message.edit_reply_markup(reply_markup=build_config_keyboard(cfg, orig_ext=orig_ext, max_res=max_res))
     except TelegramBadRequest:
         pass
 
@@ -1947,7 +1997,8 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     if not video:
         return await callback.message.edit_text("❌ ویدیویی یافت نشد.")
 
-    orig_ext = detect_file_extension(orig_msg)
+    panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
+    orig_ext = panel_meta.get("orig_ext") or detect_file_extension(orig_msg)
     user_id = callback.from_user.id
     user_name = callback.from_user.full_name or "کاربر"
     username = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
@@ -1959,7 +2010,6 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "name": user_name
     }
 
-    # ایجاد شناسه ثبت مدیا در کش جهت دریافت توسط ادمین
     token = uuid.uuid4().hex[:8]
     if len(ADMIN_MEDIA_STORE) > 500:
         ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
@@ -1971,7 +2021,6 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
 
     file_size_mb = video.file_size / (1024 * 1024)
 
-    # ارسال لاگ اول به ادمین در صورت درخواست کاربر عادی
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
         user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
@@ -2258,10 +2307,19 @@ async def process_job(job: dict):
         has_audio = in_meta.get("has_audio", False)
         eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
+        # جلوگیری قطعی در لایه سرور از آپ‌اسکیل کردن ویدیو
+        in_w = in_meta.get("width", 1280)
+        in_h = in_meta.get("height", 720)
+        orig_min_dim = min(in_w, in_h) if (in_w and in_h) else 1080
+
+        if cfg["res"] != "orig":
+            if int(cfg["res"]) > orig_min_dim:
+                cfg["res"] = "orig"
+
         if mode == "audio":
             cmd = [
                 FFMPEG_BIN, "-y",
-                "-threads", "1",
+                "-threads", "2",
                 "-i", input_path,
                 "-max_muxing_queue_size", "1024"
             ]
@@ -2288,7 +2346,7 @@ async def process_job(job: dict):
 
             cmd = [
                 FFMPEG_BIN, "-y",
-                "-threads", "1",
+                "-threads", "2",
                 "-i", input_path
             ]
 
@@ -2301,7 +2359,10 @@ async def process_job(job: dict):
             if speed_factor != 1.0:
                 vf.append(f"setpts={1.0 / speed_factor}*PTS")
             if cfg["res"] != "orig":
-                vf.append(f"scale=-2:{cfg['res']}:flags=fast_bilinear")
+                target_dim = cfg["res"]
+                # مقیاس‌بندی بر اساس جهت ویدیو (افقی یا عمودی) جهت حفظ نسبت ابعاد دقیق
+                scale_filter = f"scale='if(gte(iw,ih),-2,{target_dim})':'if(gte(iw,ih),{target_dim},-2)':flags=fast_bilinear"
+                vf.append(scale_filter)
 
             cmd += [
                 "-map", "0:v:0",
@@ -2317,7 +2378,7 @@ async def process_job(job: dict):
             if v_codec == "libx264":
                 cmd += ["-tune", "fastdecode", "-x264opts", "rc-lookahead=0:sync-lookahead=0:bframes=0"]
             elif v_codec == "libx265":
-                cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=0:bframes=0"]
+                cmd += ["-x265-params", "pools=2:frame-threads=1:rc-lookahead=0:bframes=0"]
 
             if include_real_audio:
                 if speed_factor != 1.0:
@@ -2476,7 +2537,6 @@ async def process_job(job: dict):
             )
             delivered_file_id = sent_msg.video.file_id
 
-        # به‌روزرسانی شناسه فایل خروجی برای دسترسی ادمین
         if token and token in ADMIN_MEDIA_STORE:
             ADMIN_MEDIA_STORE[token]["comp_file_id"] = delivered_file_id
 
@@ -2505,7 +2565,6 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
-        # ارسال لاگ دوم به ادمین پس از تحویل موفق فایل به کاربر
         if user_id != ADMIN_ID:
             admin_finish_kb = InlineKeyboardBuilder()
             admin_finish_kb.button(text="🎬 دریافت ویدیو فشرده شده", callback_data=f"adm_comp:{token}")
