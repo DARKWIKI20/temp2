@@ -69,6 +69,7 @@ USER_REQUESTS = {}
 URL_DOWNLOADS = {}
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
+ADMIN_MEDIA_STORE = {}
 DB_POOL = None
 PREFS_CACHE = {}
 
@@ -1061,7 +1062,6 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         tb = traceback.format_exc()
         logging.error(f"yt-dlp error for user {user_id}: {tb}")
 
-        # ارسال جزئیات فنی و لاگ خام منحصراً برای ادمین
         admin_alert = (
             f"🚨 <b>خطای دانلود لینک (yt-dlp):</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -1075,7 +1075,6 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         except Exception:
             pass
 
-        # پیام امن و تصفیه‌شده برای کاربر عادی
         user_error_message = "⚠️ متأسفانه دانلود این ویدیو با خطا مواجه شد.\nممکن است لینک ارسالی نامعتبر، خصوصی، دارای محدودیت منطقه‌ای/سنی بوده یا حجم آن بیش از حد مجاز باشد."
         try:
             await status_msg.edit_text(user_error_message, parse_mode="HTML")
@@ -1109,6 +1108,49 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
         reply_markup=build_config_keyboard(default_cfg, orig_ext="mp4"),
         parse_mode="HTML"
     )
+
+
+# --- دریافت فایل توسط ادمین از طریق لاگ‌ها ---
+@dp.callback_query(F.data.startswith("adm_orig:"))
+async def admin_fetch_orig_media(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    token = callback.data.split(":")[1]
+    data = ADMIN_MEDIA_STORE.get(token)
+    if not data or not data.get("orig_file_id"):
+        return await callback.answer("❌ فایل اصلی در حافظه موقت یافت نشد یا منقضی شده است.", show_alert=True)
+
+    await callback.answer("در حال ارسال فایل اصلی کاربر...")
+    try:
+        await bot.send_video(chat_id=ADMIN_ID, video=data["orig_file_id"], caption="📹 <b>ویدیوی اصلی ارسالی کاربر</b>", parse_mode="HTML")
+    except Exception:
+        try:
+            await bot.send_document(chat_id=ADMIN_ID, document=data["orig_file_id"], caption="📹 <b>فایل اصلی ارسالی کاربر</b>", parse_mode="HTML")
+        except Exception as e:
+            await callback.message.answer(f"⚠️ ارسال فایل اصلی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_comp:"))
+async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    token = callback.data.split(":")[1]
+    data = ADMIN_MEDIA_STORE.get(token)
+    if not data or not data.get("comp_file_id"):
+        return await callback.answer("❌ فایل پردازش‌شده هنوز آماده نشده یا منقضی شده است.", show_alert=True)
+
+    await callback.answer("در حال ارسال فایل فشرده‌شده...")
+    is_audio = data.get("is_audio", False)
+    try:
+        if is_audio:
+            await bot.send_audio(chat_id=ADMIN_ID, audio=data["comp_file_id"], caption="🎵 <b>فایل صوتی استخراج‌شده</b>", parse_mode="HTML")
+        else:
+            await bot.send_video(chat_id=ADMIN_ID, video=data["comp_file_id"], caption="🎬 <b>ویدیوی فشرده‌شده نهایی</b>", parse_mode="HTML")
+    except Exception:
+        try:
+            await bot.send_document(chat_id=ADMIN_ID, document=data["comp_file_id"], caption="📁 <b>فایل نهایی تحویل داده‌شده</b>", parse_mode="HTML")
+        except Exception as e:
+            await callback.message.answer(f"⚠️ ارسال فایل خروجی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
 # --- پنل مدیریت ادمین ---
@@ -1832,15 +1874,49 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
         parse_mode="HTML"
     )
     
+    user_id = callback.from_user.id
+    token = uuid.uuid4().hex[:8]
+    if len(ADMIN_MEDIA_STORE) > 500:
+        ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
+    ADMIN_MEDIA_STORE[token] = {
+        "orig_file_id": req["file_id"],
+        "comp_file_id": None,
+        "is_audio": True
+    }
+
+    if user_id != ADMIN_ID:
+        u_stat = await get_user_stat(user_id)
+        user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
+        username_str = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
+        admin_req_kb = InlineKeyboardBuilder()
+        admin_req_kb.button(text="📹 دریافت ویدیوی ارسالی", callback_data=f"adm_orig:{token}")
+
+        log_1 = (
+            "📹 <b>درخواست جدید پردازش ویدیو (صوت)</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>نام کاربر:</b> {html.escape(callback.from_user.full_name or 'کاربر')}\n"
+            f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
+            f"🔗 <b>یوزرنیم:</b> {html.escape(username_str)}\n"
+            "📦 <b>نوع درخواست:</b> استخراج صوت MP3\n"
+            f"💵 <b>کل هزینه کاربر تا الان:</b> ${user_cost:.4f}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>برای دیدن فایل ارسالی کاربر، دکمه زیر رو بزن:</i>"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=log_1, reply_markup=admin_req_kb.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
+
     new_job_id = f"audio_{uuid.uuid4().hex[:6]}"
     ACTIVE_PROCESSES[new_job_id] = {"cancelled": False, "proc": None}
     await JOB_QUEUE.put((1.0, 0, {
         "job_id": new_job_id, "cfg": audio_cfg, "msg_id": callback.message.message_id,
         "file_size": 10 * 1024 * 1024, "file_id": req["file_id"],
         "chat_id": callback.message.chat.id, "user": callback.from_user,
-        "user_id": callback.from_user.id,
+        "user_id": user_id,
         "orig_ext": "mp4",
-        "status_msg": status_msg
+        "status_msg": status_msg,
+        "token": token
     }))
 
 
@@ -1874,6 +1950,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     orig_ext = detect_file_extension(orig_msg)
     user_id = callback.from_user.id
     user_name = callback.from_user.full_name or "کاربر"
+    username = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
     job_id = f"{callback.message.chat.id}_{callback.message.message_id}"
 
     USER_REQUESTS[job_id] = {
@@ -1881,6 +1958,44 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "user_id": user_id,
         "name": user_name
     }
+
+    # ایجاد شناسه ثبت مدیا در کش جهت دریافت توسط ادمین
+    token = uuid.uuid4().hex[:8]
+    if len(ADMIN_MEDIA_STORE) > 500:
+        ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
+    ADMIN_MEDIA_STORE[token] = {
+        "orig_file_id": video.file_id,
+        "comp_file_id": None,
+        "is_audio": (cfg["mode"] == "audio")
+    }
+
+    file_size_mb = video.file_size / (1024 * 1024)
+
+    # ارسال لاگ اول به ادمین در صورت درخواست کاربر عادی
+    if user_id != ADMIN_ID:
+        u_stat = await get_user_stat(user_id)
+        user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
+        
+        cfg_str = f"{cfg['mode']} | {cfg['res']} | {cfg['codec']}"
+        admin_req_kb = InlineKeyboardBuilder()
+        admin_req_kb.button(text="📹 دریافت ویدیوی ارسالی", callback_data=f"adm_orig:{token}")
+
+        log_1 = (
+            "📹 <b>درخواست جدید پردازش ویدیو</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>نام کاربر:</b> {html.escape(user_name)}\n"
+            f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
+            f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+            f"📦 <b>حجم فایل:</b> {file_size_mb:.2f} مگابایت\n"
+            f"⚙️ <b>تنظیمات:</b> {html.escape(cfg_str)}\n"
+            f"💵 <b>کل هزینه کاربر تا الان:</b> ${user_cost:.4f}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>برای دیدن ویدیوی ارسالی کاربر، دکمه زیر رو بزن:</i>"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=log_1, reply_markup=admin_req_kb.as_markup(), parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Failed to send request log to admin: {e}")
 
     priority = calculate_priority(user_id, video.file_size)
     QUEUE_COUNTER += 1
@@ -1901,9 +2016,10 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "job_id": job_id, "cfg": cfg, "msg_id": orig_msg.message_id,
         "file_size": video.file_size, "file_id": video.file_id,
         "chat_id": callback.message.chat.id, "user": callback.from_user,
-        "user_id": callback.from_user.id,
+        "user_id": user_id,
         "orig_ext": orig_ext,
-        "status_msg": status_msg
+        "status_msg": status_msg,
+        "token": token
     }))
 
 
@@ -1936,7 +2052,6 @@ async def queue_worker():
             user_name = u.full_name if u else "نامشخص"
             username = f"@{u.username}" if (u and u.username) else "ندارد"
 
-            # گزارش خطای فنی کامل فقط برای ادمین
             admin_err_alert = (
                 f"🚨 <b>گزارش خطای خودکار پردازش:</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -1965,7 +2080,6 @@ async def queue_worker():
             err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
             err_kb.adjust(1)
 
-            # پیام تمیز، راهگشا و بدون فاش‌سازی لاگ برای کاربر عادی
             user_notice = (
                 "⚠️ متأسفانه در فرآیند تبدیل و فشرده‌سازی این فایل مشکلی رخ داد.\n\n"
                 "📌 ممکن است فایل ارسالی فرمت استانداردی نداشته یا آسیب دیده باشد.\n"
@@ -2093,6 +2207,7 @@ async def process_job(job: dict):
     orig_ext = job.get("orig_ext", "mp4")
     fmt_choice = cfg.get("fmt", "orig")
     speed_factor = float(cfg.get("speed", "1.0"))
+    token = job.get("token")
 
     start_cpu_sec = get_cpu_seconds()
     start_wall_time = time.time()
@@ -2335,7 +2450,7 @@ async def process_job(job: dict):
         post_markup = PyroInlineKeyboardMarkup(post_buttons)
 
         if mode == "audio":
-            await pyro.send_audio(
+            sent_msg = await pyro.send_audio(
                 chat_id=chat_id,
                 audio=output_path,
                 duration=out_dur,
@@ -2344,8 +2459,9 @@ async def process_job(job: dict):
                 progress=pyro_progress,
                 progress_args=(ui_state,)
             )
+            delivered_file_id = sent_msg.audio.file_id
         else:
-            await pyro.send_video(
+            sent_msg = await pyro.send_video(
                 chat_id=chat_id,
                 video=output_path,
                 duration=out_dur,
@@ -2358,6 +2474,11 @@ async def process_job(job: dict):
                 progress=pyro_progress,
                 progress_args=(ui_state,)
             )
+            delivered_file_id = sent_msg.video.file_id
+
+        # به‌روزرسانی شناسه فایل خروجی برای دسترسی ادمین
+        if token and token in ADMIN_MEDIA_STORE:
+            ADMIN_MEDIA_STORE[token]["comp_file_id"] = delivered_file_id
 
         ui_state["done"] = True
         ui_task.cancel()
@@ -2383,6 +2504,31 @@ async def process_job(job: dict):
             file_size_mb=initial_size / (1024 * 1024),
             file_id=job["file_id"]
         )
+
+        # ارسال لاگ دوم به ادمین پس از تحویل موفق فایل به کاربر
+        if user_id != ADMIN_ID:
+            admin_finish_kb = InlineKeyboardBuilder()
+            admin_finish_kb.button(text="🎬 دریافت ویدیو فشرده شده", callback_data=f"adm_comp:{token}")
+            admin_finish_kb.button(text="📹 دریافت ویدیو اصلی", callback_data=f"adm_orig:{token}")
+            admin_finish_kb.adjust(1)
+
+            username_str = f"@{username}" if username else "ندارد"
+            log_2 = (
+                "✅ <b>اتمام پردازش و تحویل ویدیو</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>نام کاربر:</b> {html.escape(user_name)}\n"
+                f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
+                f"🔗 <b>یوزرنیم:</b> {html.escape(username_str)}\n"
+                f"📦 <b>حجم اولیه:</b> {initial_size / (1024*1024):.2f} MB\n"
+                f"📉 <b>حجم نهایی:</b> {final_size / (1024*1024):.2f} MB\n"
+                f"⚡️ <b>میزان کاهش:</b> {reduction_str}\n"
+                f"💵 <b>هزینه این تبدیل:</b> ${exact_cost:.5f}\n"
+                "━━━━━━━━━━━━━━━━━━"
+            )
+            try:
+                await bot.send_message(chat_id=ADMIN_ID, text=log_2, reply_markup=admin_finish_kb.as_markup(), parse_mode="HTML")
+            except Exception as adm_e:
+                logging.error(f"Failed to send completion log to admin: {adm_e}")
 
     finally:
         ui_state["done"] = True
