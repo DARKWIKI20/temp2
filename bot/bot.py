@@ -29,7 +29,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- متغیرهای سیستمی و پیکربندی ---
-BOT_VERSION = "2.1.3"
+BOT_VERSION = "2.1.4"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
@@ -556,6 +556,8 @@ def get_user_default_cfg(user_id: int) -> dict:
     }
     user_saved = PREFS_CACHE.get(str(user_id), {}).get("default_cfg", {})
     base.update(user_saved)
+    if base.get("res") == "orig":
+        base["res"] = "720"
     return base
 
 
@@ -715,10 +717,16 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
     mode = cfg["mode"]
     res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
 
-    # جلوگیری از انتخاب رزولوشن بالاتر از رزولوشن ورودی
-    if res.isdigit() and int(res) > max_res:
-        res = "orig"
-        cfg["res"] = "orig"
+    # فیلتر رزولوشن‌ها و حذف دکمه کیفیت اصلی
+    res_list = [("1080", "1080p"), ("720", "720p"), ("480", "480p")]
+    available_res = [item for item in res_list if int(item[0]) <= max_res]
+    if not available_res:
+        available_res = [(str(max_res), f"{max_res}p")]
+
+    valid_keys = [k for k, _ in available_res]
+    if res not in valid_keys:
+        res = valid_keys[0]
+        cfg["res"] = res
 
     b.button(text="🎬 تبدیل و فشرده‌سازی" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
     b.button(text="🎵 فقط صدا (MP3)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
@@ -729,12 +737,7 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
         b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
 
-        res_options = [("orig", "کیفیت اصلی")]
-        for r_val, r_label in [("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
-            if int(r_val) <= max_res:
-                res_options.append((r_val, r_label))
-
-        for r_k, r_t in res_options:
+        for r_k, r_t in available_res:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="cfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
         b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
@@ -756,8 +759,7 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
     b.button(text="🔴 پشیمون شدم", callback_data="cancel_panel")
 
     if mode == "video":
-        num_res = len(res_options)
-        b.adjust(2, 1, 3, num_res, 2, 3, 1, 3, 2)
+        b.adjust(2, 1, 3, len(available_res), 2, 3, 1, 3, 2)
     else:
         b.adjust(2, 5, 3, 2)
     return b.as_markup()
@@ -768,6 +770,10 @@ def build_default_config_keyboard(cfg: dict):
     mode = cfg["mode"]
     res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
 
+    if res == "orig" or not res.isdigit():
+        res = "720"
+        cfg["res"] = "720"
+
     b.button(text="🎬 تبدیل ویدیو" + (" ✅" if mode == "video" else ""), callback_data="defcfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
     b.button(text="🎵 استخراج صدا" + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
@@ -777,7 +783,7 @@ def build_default_config_keyboard(cfg: dict):
         b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
         b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
 
-        for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
+        for r_k, r_t in [("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="defcfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
         b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
@@ -797,7 +803,7 @@ def build_default_config_keyboard(cfg: dict):
     b.button(text="🔴 بازگشت به تنظیمات", callback_data="back_to_settings")
 
     if mode == "video":
-        b.adjust(2, 1, 3, 4, 2, 3, 1, 3, 1)
+        b.adjust(2, 1, 3, 3, 2, 3, 1, 3, 1)
     else:
         b.adjust(2, 5, 3, 1)
     return b.as_markup()
@@ -1057,7 +1063,13 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             width=meta["width"],
             height=meta["height"],
             thumb=thumb_path if (os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100) else None,
-            caption=f"🎬 <b>ویدیوی شما دریافت گردید!</b>\n📦 حجم: <b>{fsize / (1024*1024):.2f} MB</b>",
+            caption=(
+                f"🎬 <b>ویدیوی شما دریافت گردید!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📁 فرمت: <b>MP4</b>\n"
+                f"📦 حجم: <b>{fsize / (1024*1024):.2f} MB</b>\n"
+                f"📐 کیفیت: <b>{meta['width']}x{meta['height']} ({quality}p)</b>"
+            ),
             reply_markup=PyroInlineKeyboardMarkup([[
                 PyroInlineKeyboardButton("🟢 🗜 فشرده‌سازی و تبدیل این ویدیو", callback_data=f"compress_from_dl:{token}")
             ]])
@@ -1071,7 +1083,9 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             "name": user_name,
             "chat_id": chat_id,
             "message_id": sent_video.id,
-            "max_res": int(quality)
+            "max_res": int(quality),
+            "width": meta["width"],
+            "height": meta["height"]
         }
 
     except Exception as e:
@@ -1119,12 +1133,16 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     default_cfg = dict(user_default_cfg)
     dl_max_res = saved_req.get("max_res", 720)
 
-    if default_cfg.get("res", "orig").isdigit() and int(default_cfg["res"]) > dl_max_res:
-        default_cfg["res"] = "orig"
+    w = saved_req.get("width", 1280)
+    h = saved_req.get("height", 720)
+    res_str = f"{w}x{h} ({dl_max_res}p)"
 
     sent_panel = await callback.message.reply(
-        "⚙️ <b>تنظیمات پردازش ویدیو:</b>\n"
-        "تنظیمات دلخواهت رو اعمال کن و دکمه شروع رو بزن 👇",
+        f"⚙️ <b>تنظیمات پردازش ویدیو:</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📁 فرمت ورودی: <b>MP4</b>\n"
+        f"📐 کیفیت ورودی: <b>{res_str}</b>\n\n"
+        f"تنظیمات دلخواهت رو اعمال کن و دکمه شروع رو بزن 👇",
         reply_markup=build_config_keyboard(default_cfg, orig_ext="mp4", max_res=dl_max_res),
         parse_mode="HTML"
     )
@@ -1133,7 +1151,8 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
         VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
     VIDEO_META_CACHE[sent_panel.message_id] = {
         "orig_ext": "mp4",
-        "max_res": dl_max_res
+        "max_res": dl_max_res,
+        "res_str": res_str
     }
 
 
@@ -1783,7 +1802,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و نمایش تنظیمات ---
+# --- دریافت ویدیو و نمایش مشخصات و تنظیمات ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1825,27 +1844,31 @@ async def handle_video(message: aiotypes.Message):
     user_default_cfg = get_user_default_cfg(message.from_user.id)
     default_cfg = dict(user_default_cfg)
 
-    # محاسبه و استخراج رزولوشن ویدیو برای جلوگیری از ارتقای مقیاس (Upscaling)
+    # استخراج ابعاد و محاسبه سقف رزولوشن مجاز
     max_res = 1080
-    if message.video:
-        w = message.video.width or 0
-        h = message.video.height or 0
-        if w > 0 and h > 0:
-            max_res = min(w, h)
-        elif h > 0:
-            max_res = h
-        elif w > 0:
-            max_res = w
+    w = getattr(video, "width", 0) or 0
+    h = getattr(video, "height", 0) or 0
+    
+    if w > 0 and h > 0:
+        max_res = min(w, h)
+        res_str = f"{w}x{h} ({max_res}p)"
+    else:
+        res_str = "1080p (تخمینی)"
+        max_res = 1080
 
-    if default_cfg.get("res", "orig").isdigit() and int(default_cfg["res"]) > max_res:
-        default_cfg["res"] = "orig"
+    if default_cfg.get("res", "720").isdigit() and int(default_cfg["res"]) > max_res:
+        default_cfg["res"] = "720" if max_res >= 720 else "480"
 
-    duration_text = format_seconds(video.duration) if hasattr(video, "duration") and video.duration else "نامشخص"
+    duration_text = format_seconds(getattr(video, "duration", 0))
 
     info_card = (
         f"📹 <b>مشخصات فایل ورودی دریافت شد:</b>\n"
-        f"<blockquote>📦 حجم: <b>{file_size_mb:.2f} MB</b> | فرمت: <b>{orig_ext.upper()}</b>\n"
-        f"⏱ مدت زمان: <b>{duration_text}</b></blockquote>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📁 فرمت: <b>{orig_ext.upper()}</b>\n"
+        f"📦 حجم: <b>{file_size_mb:.2f} MB</b>\n"
+        f"📐 کیفیت و وضوح: <b>{res_str}</b>\n"
+        f"⏱ مدت زمان: <b>{duration_text}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"👇 <i>تنظیمات دلخواه را انتخاب نموده و شروع را لمس کنید:</i>"
     )
 
@@ -1859,7 +1882,8 @@ async def handle_video(message: aiotypes.Message):
         VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
     VIDEO_META_CACHE[sent_panel.message_id] = {
         "orig_ext": orig_ext,
-        "max_res": max_res
+        "max_res": max_res,
+        "res_str": res_str
     }
 
 
@@ -1915,7 +1939,7 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
         return await callback.message.reply("❌ اطلاعات این ویدیو منقضی شده است.")
     
     audio_cfg = {
-        "mode": "audio", "res": "orig", "codec": "h264",
+        "mode": "audio", "res": "720", "codec": "h264",
         "crf": "medium", "mute": False, "speed": "1.0", "fmt": "mp3"
     }
     
@@ -1999,6 +2023,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
 
     panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
     orig_ext = panel_meta.get("orig_ext") or detect_file_extension(orig_msg)
+    in_res_str = panel_meta.get("res_str", "نامشخص")
     user_id = callback.from_user.id
     user_name = callback.from_user.full_name or "کاربر"
     username = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
@@ -2021,11 +2046,12 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
 
     file_size_mb = video.file_size / (1024 * 1024)
 
+    # ارسال لاگ اول با ذکر مشخصات کامل فایل
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
         user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
         
-        cfg_str = f"{cfg['mode']} | {cfg['res']} | {cfg['codec']}"
+        cfg_str = f"{cfg['mode']} | {cfg['res']}p | {cfg['codec']}"
         admin_req_kb = InlineKeyboardBuilder()
         admin_req_kb.button(text="📹 دریافت ویدیوی ارسالی", callback_data=f"adm_orig:{token}")
 
@@ -2035,8 +2061,10 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
             f"👤 <b>نام کاربر:</b> {html.escape(user_name)}\n"
             f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
             f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+            f"📁 <b>فرمت فایل:</b> {orig_ext.upper()}\n"
             f"📦 <b>حجم فایل:</b> {file_size_mb:.2f} مگابایت\n"
-            f"⚙️ <b>تنظیمات:</b> {html.escape(cfg_str)}\n"
+            f"📐 <b>کیفیت ورودی:</b> {in_res_str}\n"
+            f"⚙️ <b>تنظیمات انتخابی:</b> {html.escape(cfg_str)}\n"
             f"💵 <b>کل هزینه کاربر تا الان:</b> ${user_cost:.4f}\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "💡 <i>برای دیدن ویدیوی ارسالی کاربر، دکمه زیر رو بزن:</i>"
@@ -2307,14 +2335,20 @@ async def process_job(job: dict):
         has_audio = in_meta.get("has_audio", False)
         eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
-        # جلوگیری قطعی در لایه سرور از آپ‌اسکیل کردن ویدیو
         in_w = in_meta.get("width", 1280)
         in_h = in_meta.get("height", 720)
         orig_min_dim = min(in_w, in_h) if (in_w and in_h) else 1080
 
-        if cfg["res"] != "orig":
-            if int(cfg["res"]) > orig_min_dim:
-                cfg["res"] = "orig"
+        # اطمینان از مقدار عددی رزولوشن
+        target_res = cfg.get("res", "720")
+        if not target_res.isdigit():
+            target_res = "720"
+        
+        target_int = int(target_res)
+        if target_int > orig_min_dim:
+            target_int = orig_min_dim
+            target_res = str(target_int)
+            cfg["res"] = target_res
 
         if mode == "audio":
             cmd = [
@@ -2358,11 +2392,9 @@ async def process_job(job: dict):
             vf = []
             if speed_factor != 1.0:
                 vf.append(f"setpts={1.0 / speed_factor}*PTS")
-            if cfg["res"] != "orig":
-                target_dim = cfg["res"]
-                # مقیاس‌بندی بر اساس جهت ویدیو (افقی یا عمودی) جهت حفظ نسبت ابعاد دقیق
-                scale_filter = f"scale='if(gte(iw,ih),-2,{target_dim})':'if(gte(iw,ih),{target_dim},-2)':flags=fast_bilinear"
-                vf.append(scale_filter)
+
+            scale_filter = f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear"
+            vf.append(scale_filter)
 
             cmd += [
                 "-map", "0:v:0",
@@ -2480,7 +2512,8 @@ async def process_job(job: dict):
         show_details = get_user_show_details(user_id)
         base_caption = (
             f"✨ <b>ویدیوی شما آماده گردید!</b>\n\n"
-            f"<blockquote>📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} MB</b>\n"
+            f"<blockquote>📁 فرمت خروجی: <b>{out_ext.upper()}</b>\n"
+            f"📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} MB</b>\n"
             f"📉 حجم نهایی: <b>{final_size / (1024*1024):.2f} MB</b>\n"
             f"⚡️ میزان کاهش: <b>{reduction_str}</b></blockquote>"
             f"{size_notice}"
@@ -2488,13 +2521,13 @@ async def process_job(job: dict):
 
         if show_details:
             if mode == "audio":
-                summary_text = f"\n\n🛠 <b>مشخصات:</b> فرمت {out_ext.upper()} | موزیک صوتی"
+                summary_text = f"\n\n🛠 <b>مشخصات فایل:</b> فرمت {out_ext.upper()} | موزیک صوتی"
             else:
-                res_names = {"orig": "اصلی", "1080": "1080p", "720": "720p", "480": "480p"}
                 codec_names = {"h264": "H.264", "h265": "H.265"}
                 summary_text = (
                     f"\n\n🛠 <b>تنظیمات اعمال‌شده:</b>\n"
-                    f"▫️ فرمت: <b>{out_ext.upper()}</b> | کیفیت: <b>{res_names.get(cfg['res'], cfg['res'])}</b>\n"
+                    f"▫️ فرمت: <b>{out_ext.upper()}</b> | ابعاد: <b>{out_w}x{out_h}</b>\n"
+                    f"▫️ کیفیت خروجی: <b>{target_res}p</b>\n"
                     f"▫️ انکودر: <b>{codec_names.get(cfg['codec'], cfg['codec'])}</b> | سرعت: <b>{speed_factor}x</b>"
                 )
             caption = base_caption + summary_text
@@ -2565,6 +2598,7 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
+        # ارسال لاگ دوم به ادمین با مشخصات دقیق خروجی
         if user_id != ADMIN_ID:
             admin_finish_kb = InlineKeyboardBuilder()
             admin_finish_kb.button(text="🎬 دریافت ویدیو فشرده شده", callback_data=f"adm_comp:{token}")
@@ -2578,8 +2612,10 @@ async def process_job(job: dict):
                 f"👤 <b>نام کاربر:</b> {html.escape(user_name)}\n"
                 f"🆔 <b>آیدی عددی:</b> <code>{user_id}</code>\n"
                 f"🔗 <b>یوزرنیم:</b> {html.escape(username_str)}\n"
+                f"📁 <b>فرمت خروجی:</b> {out_ext.upper()}\n"
                 f"📦 <b>حجم اولیه:</b> {initial_size / (1024*1024):.2f} MB\n"
                 f"📉 <b>حجم نهایی:</b> {final_size / (1024*1024):.2f} MB\n"
+                f"📐 <b>کیفیت و ابعاد نهایی:</b> {out_w}x{out_h} ({target_res}p)\n"
                 f"⚡️ <b>میزان کاهش:</b> {reduction_str}\n"
                 f"💵 <b>هزینه این تبدیل:</b> ${exact_cost:.5f}\n"
                 "━━━━━━━━━━━━━━━━━━"
