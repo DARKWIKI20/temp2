@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.1"
+BOT_VERSION = "2.4.2"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
@@ -874,7 +874,7 @@ def build_default_config_keyboard(cfg: dict):
         b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
         b.button(text="H.265 (کم‌حجم‌تر)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
 
-        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (فشرده)")]:
+        for c_k, c_t in [("light", "کیفیت بالا"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (فشرده)")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
 
         b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
@@ -2032,6 +2032,89 @@ async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"⚠️ ارسال فایل خروجی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
+async def queue_worker():
+    while True:
+        priority, count, job = await JOB_QUEUE.get()
+        job_id = job["job_id"]
+
+        if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
+            ACTIVE_PROCESSES.pop(job_id, None)
+            JOB_QUEUE.task_done()
+            continue
+
+        task = asyncio.create_task(process_job(job))
+        RUNNING_TASKS[job_id] = task
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            logging.info(f"Task {job_id} cancelled.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Job {job_id} error:\n{tb}")
+
+            tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
+            clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
+
+            u = job.get("user")
+            user_id = job.get("user_id") or (u.id if u else job["chat_id"])
+            user_name = u.full_name if u else "نامشخص"
+            username = f"@{u.username}" if (u and u.username) else "ندارد"
+
+            admin_err_alert = (
+                f"🚨 <b>گزارش خطای خودکار پردازش</b>\n\n"
+                f"<blockquote>👤 کاربر: {html.escape(user_name)} (<code>{user_id}</code>)\n"
+                f"🔗 نام کاربری: {html.escape(username)}\n"
+                f"❌ شرح خطا: <code>{html.escape(str(e)[:250])}</code></blockquote>\n\n"
+                f"📋 لاگ فنی:\n<pre>{html.escape(clean_tb[:800])}</pre>"
+            )
+
+            admin_err_kb = InlineKeyboardBuilder()
+            token = job.get("token")
+            if token and token in ADMIN_MEDIA_STORE:
+                admin_err_kb.button(text="📹 دریافت ویدیو", callback_data=f"adm_orig:{token}")
+
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=admin_err_alert,
+                    reply_markup=admin_err_kb.as_markup() if token else None,
+                    parse_mode="HTML"
+                )
+            except Exception as adm_err:
+                logging.error(f"Alert admin error: {adm_err}")
+
+            if len(FAILED_JOBS) > 100:
+                FAILED_JOBS.pop(next(iter(FAILED_JOBS)))
+
+            FAILED_JOBS[job_id] = {
+                "chat_id": job["chat_id"],
+                "msg_id": job["msg_id"],
+                "user_name": user_name,
+                "user_id": user_id
+            }
+
+            err_kb = InlineKeyboardBuilder()
+            err_kb.button(text="🟢 بله، فایل اصلی بررسی شود", callback_data=f"err_send_vid:{job_id}")
+            err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
+            err_kb.adjust(1)
+
+            user_notice = (
+                "⚠️ متأسفانه در فرآیند تبدیل و فشرده‌سازی این فایل مشکلی پیش آمد.\n\n"
+                "<blockquote>📌 ممکن است فایل ارسالی آسیب دیده باشد یا استاندارد نباشد.\n"
+                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b></blockquote>\n\n"
+                "❓ مایلید فایل اصلی جهت بررسی فنی برای پشتیبانی ارسال شود؟"
+            )
+            try:
+                await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
+            except Exception:
+                pass
+        finally:
+            RUNNING_TASKS.pop(job_id, None)
+            ACTIVE_PROCESSES.pop(job_id, None)
+            JOB_QUEUE.task_done()
+
+
 async def process_job(job: dict):
     job_id = job["job_id"]
     media_type = job.get("media_type", "video")
@@ -2150,8 +2233,6 @@ async def process_job(job: dict):
                 vf = []
                 if speed_factor != 1.0:
                     vf.append(f"setpts={1.0 / speed_factor}*PTS")
-                
-                # جلوگیری تضمینی از کرش ابعاد فرد در yuv420p
                 if target_res != "orig":
                     vf.append(f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear")
                 else:
@@ -2165,7 +2246,6 @@ async def process_job(job: dict):
                 if vf:
                     cmd += ["-vf", ",".join(vf)]
 
-                # مهار مصرف رم انکودر جهت جلوگیری از SIGKILL در کانتینرهای با رم محدود
                 if v_codec == "libx265":
                     cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=10:bframes=2"]
                 elif v_codec == "libx264":
