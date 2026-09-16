@@ -55,12 +55,14 @@ session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
+# غیرفعال‌سازی دریافت آپدیت در پایروگرام برای جلوگیری از قطع ارتباط getUpdates در آیگرام
 pyro = PyroClient(
     name="bot_engine",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    ipv6=False
+    ipv6=False,
+    no_updates=True
 )
 
 SUPPORT_MAP = {}
@@ -337,7 +339,7 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
                             ELSE user_stats.max_vid_file_id
                         END,
                         max_vid_cost = CASE 
-                            WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.total_cost
+                            WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_file_id
                             ELSE user_stats.max_vid_cost
                         END,
                         max_vid_size_mb = CASE 
@@ -680,6 +682,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
 pyro.save_file = types.MethodType(custom_save_file, pyro)
 
 
+# اجرای مهارشده FFmpeg با حداقل درگیری حافظه و ثبت زنده پیشرفت
 async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: float, job_id: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -738,7 +741,7 @@ async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: fl
         return -1, "cancelled"
 
     if proc.returncode == -9:
-        err_output = "فرایند توسط سیستم‌عامل متوقف شد (کمبود حافظه RAM / OOM)."
+        err_output = "فرایند به دلیل کمبود حافظه (OOM Killer) توسط سیستم متوقف شد."
     else:
         err_output = "\n".join(last_lines[-5:]) if last_lines else ""
         
@@ -874,7 +877,7 @@ def build_default_config_keyboard(cfg: dict):
         b.button(text="H.264 (استاندارد)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
         b.button(text="H.265 (کم‌حجم‌تر)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
 
-        for c_k, c_t in [("light", "کیفیت بالا"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (فشرده)")]:
+        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل"), ("heavy", "کاهش زیاد (فشرده)")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
 
         b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
@@ -1242,7 +1245,11 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     VIDEO_META_CACHE[sent_panel.message_id] = {
         "orig_ext": "mp4",
         "max_res": dl_max_res,
-        "res_str": res_str
+        "res_str": res_str,
+        "media_type": "video",
+        "file_size": saved_req.get("file_size", 0),
+        "file_id": saved_req["file_id"],
+        "orig_msg_id": saved_req.get("message_id", sent_panel.message_id)
     }
 
 
@@ -1860,7 +1867,9 @@ async def handle_uncompressed_photo_notice(message: aiotypes.Message):
     await message.reply("⚠️ پردازش تصویر پشتیبانی نمی‌شود. لطفاً فایل ویدیویی یا صوتی ارسال کنید.")
 
 
-def detect_file_extension(message: aiotypes.Message) -> str:
+def detect_file_extension(message: aiotypes.Message | None) -> str:
+    if not message:
+        return "mp4"
     file_name = None
     if message.video and message.video.file_name:
         file_name = message.video.file_name
@@ -1875,7 +1884,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
         return "mp4"
     if message.audio or message.voice:
         return "mp3"
-    return "bin"
+    return "mp4"
 
 
 @dp.message(F.video | F.document | F.audio | F.voice)
@@ -1965,8 +1974,13 @@ async def handle_incoming_media(message: aiotypes.Message):
         if len(VIDEO_META_CACHE) > 500:
             VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
         VIDEO_META_CACHE[sent_panel.message_id] = {
-            "orig_ext": ext, "max_res": max_res, "res_str": res_str,
-            "media_type": "video", "file_size_mb": file_size_mb, "file_id": file_obj.file_id
+            "orig_ext": ext,
+            "max_res": max_res,
+            "res_str": res_str,
+            "media_type": "video",
+            "file_size": file_size_bytes,
+            "file_id": file_obj.file_id,
+            "orig_msg_id": message.message_id
         }
 
     elif media_category == "audio":
@@ -1986,7 +2000,11 @@ async def handle_incoming_media(message: aiotypes.Message):
         if len(VIDEO_META_CACHE) > 500:
             VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
         VIDEO_META_CACHE[sent_panel.message_id] = {
-            "orig_ext": ext, "media_type": "audio", "file_size_mb": file_size_mb, "file_id": file_obj.file_id
+            "orig_ext": ext,
+            "media_type": "audio",
+            "file_size": file_size_bytes,
+            "file_id": file_obj.file_id,
+            "orig_msg_id": message.message_id
         }
 
 
@@ -2032,444 +2050,302 @@ async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"⚠️ ارسال فایل خروجی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-async def queue_worker():
-    while True:
-        priority, count, job = await JOB_QUEUE.get()
-        job_id = job["job_id"]
-
-        if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
-            ACTIVE_PROCESSES.pop(job_id, None)
-            JOB_QUEUE.task_done()
-            continue
-
-        task = asyncio.create_task(process_job(job))
-        RUNNING_TASKS[job_id] = task
-
-        try:
-            await task
-        except asyncio.CancelledError:
-            logging.info(f"Task {job_id} cancelled.")
-        except Exception as e:
-            tb = traceback.format_exc()
-            logging.error(f"Job {job_id} error:\n{tb}")
-
-            tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
-            clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
-
-            u = job.get("user")
-            user_id = job.get("user_id") or (u.id if u else job["chat_id"])
-            user_name = u.full_name if u else "نامشخص"
-            username = f"@{u.username}" if (u and u.username) else "ندارد"
-
-            admin_err_alert = (
-                f"🚨 <b>گزارش خطای خودکار پردازش</b>\n\n"
-                f"<blockquote>👤 کاربر: {html.escape(user_name)} (<code>{user_id}</code>)\n"
-                f"🔗 نام کاربری: {html.escape(username)}\n"
-                f"❌ شرح خطا: <code>{html.escape(str(e)[:250])}</code></blockquote>\n\n"
-                f"📋 لاگ فنی:\n<pre>{html.escape(clean_tb[:800])}</pre>"
-            )
-
-            admin_err_kb = InlineKeyboardBuilder()
-            token = job.get("token")
-            if token and token in ADMIN_MEDIA_STORE:
-                admin_err_kb.button(text="📹 دریافت ویدیو", callback_data=f"adm_orig:{token}")
-
-            try:
-                await bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=admin_err_alert,
-                    reply_markup=admin_err_kb.as_markup() if token else None,
-                    parse_mode="HTML"
-                )
-            except Exception as adm_err:
-                logging.error(f"Alert admin error: {adm_err}")
-
-            if len(FAILED_JOBS) > 100:
-                FAILED_JOBS.pop(next(iter(FAILED_JOBS)))
-
-            FAILED_JOBS[job_id] = {
-                "chat_id": job["chat_id"],
-                "msg_id": job["msg_id"],
-                "user_name": user_name,
-                "user_id": user_id
-            }
-
-            err_kb = InlineKeyboardBuilder()
-            err_kb.button(text="🟢 بله، فایل اصلی بررسی شود", callback_data=f"err_send_vid:{job_id}")
-            err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
-            err_kb.adjust(1)
-
-            user_notice = (
-                "⚠️ متأسفانه در فرآیند تبدیل و فشرده‌سازی این فایل مشکلی پیش آمد.\n\n"
-                "<blockquote>📌 ممکن است فایل ارسالی آسیب دیده باشد یا استاندارد نباشد.\n"
-                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b></blockquote>\n\n"
-                "❓ مایلید فایل اصلی جهت بررسی فنی برای پشتیبانی ارسال شود؟"
-            )
-            try:
-                await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
-            except Exception:
-                pass
-        finally:
-            RUNNING_TASKS.pop(job_id, None)
-            ACTIVE_PROCESSES.pop(job_id, None)
-            JOB_QUEUE.task_done()
-
-
-async def process_job(job: dict):
-    job_id = job["job_id"]
-    media_type = job.get("media_type", "video")
-    status_msg = job["status_msg"]
-    initial_size = job["file_size"]
-    user_id = job.get("user_id", job["chat_id"])
-    u = job.get("user")
-    user_name = u.full_name if u else "کاربر"
-    username = u.username or ""
-    orig_ext = job.get("orig_ext", "bin")
-    token = job.get("token")
-
-    start_cpu_sec = get_cpu_seconds()
-    start_wall_time = time.time()
-
-    if media_type == "video":
-        cfg = job["cfg"]
-        mode = cfg["mode"]
-        fmt_choice = cfg.get("fmt", "orig")
-        if mode == "audio":
-            out_ext = fmt_choice if fmt_choice in ["mp3", "wav", "m4a", "ogg", "flac"] else "mp3"
-        else:
-            out_ext = orig_ext if fmt_choice == "orig" and orig_ext in ["mp4", "mkv", "mov"] else ("mp4" if fmt_choice == "orig" else fmt_choice)
-    elif media_type == "audio":
-        out_ext = job["audio_cfg"]["fmt"]
-    else:
-        out_ext = "bin"
-
-    input_path = os.path.join(DOWNLOAD_DIR, f"in_{job_id}.{orig_ext}")
-    output_path = os.path.join(DOWNLOAD_DIR, f"out_{job_id}.{out_ext}")
-    thumb_path = os.path.join(DOWNLOAD_DIR, f"thumb_{job_id}.jpg")
-
-    ui_state = {
-        "status_msg": status_msg,
-        "job_id": job_id,
-        "action": "download",
-        "percent": 0.0,
-        "done": False,
-        "file_size": initial_size,
-        "eta": None
-    }
-    ui_task = asyncio.create_task(ui_updater(ui_state))
-
+@dp.callback_query(F.data.startswith("acfg:"))
+async def update_audio_settings(callback: aiotypes.CallbackQuery):
     try:
-        for p in (input_path, output_path, thumb_path):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        await callback.answer()
+    except Exception:
+        pass
+    _, br, af, sp = callback.data.split(":")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=build_audio_keyboard(br, af, sp))
+    except TelegramBadRequest:
+        pass
 
-        await download_with_retry(job, input_path, ui_state, max_retries=3)
 
-        if ACTIVE_PROCESSES[job_id]["cancelled"]:
-            return
+@dp.callback_query(F.data.startswith("cfg:"))
+async def update_settings(callback: aiotypes.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    cfg = decode_cfg(callback.data[4:])
+    panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
+    orig_ext = panel_meta.get("orig_ext") or "mp4"
+    max_res = panel_meta.get("max_res", 1080)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=build_config_keyboard(cfg, orig_ext=orig_ext, max_res=max_res))
+    except TelegramBadRequest:
+        pass
 
-        gc.collect()
-        ui_state["action"] = "encode"
-        ui_state["percent"] = 5.0
 
-        if media_type == "video":
-            cfg = job["cfg"]
-            mode = cfg["mode"]
-            speed_factor = float(cfg.get("speed", "1.0"))
+@dp.callback_query(F.data == "cancel_panel")
+async def cancel_panel(callback: aiotypes.CallbackQuery):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    try:
+        await callback.message.edit_text("عملیات لغو شد.")
+    except Exception:
+        pass
 
-            in_meta = await get_media_meta(input_path)
-            duration = in_meta["duration"]
-            has_audio = in_meta.get("has_audio", False)
-            eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
 
-            in_w = in_meta.get("width", 1280)
-            in_h = in_meta.get("height", 720)
-            orig_min_dim = min(in_w, in_h) if (in_w and in_h) else 1080
-
-            target_res = cfg.get("res", "orig")
-            if target_res != "orig" and target_res.isdigit():
-                if int(target_res) > orig_min_dim:
-                    target_res = "orig"
-                    cfg["res"] = "orig"
-
-            if mode == "audio":
-                cmd = [
-                    FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path,
-                    "-vn", "-map_metadata", "-1",
-                    "-max_muxing_queue_size", "1024"
-                ]
-                if out_ext == "mp3":
-                    cmd += ["-c:a", "libmp3lame", "-b:a", "96k", "-ar", "44100"]
-                elif out_ext == "wav":
-                    cmd += ["-c:a", "pcm_s16le", "-ar", "44100"]
-                elif out_ext == "m4a":
-                    cmd += ["-c:a", "aac", "-b:a", "96k", "-ar", "44100"]
-                elif out_ext == "flac":
-                    cmd += ["-c:a", "flac"]
-                elif out_ext == "ogg":
-                    cmd += ["-c:a", "libvorbis", "-q:a", "3"]
-
-                if speed_factor != 1.0:
-                    cmd += ["-filter:a", f"atempo={speed_factor}"]
-                cmd += ["-progress", "pipe:2", output_path]
-            else:
-                v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
-                if v_codec == "libx265":
-                    crf_map = {"light": "24", "medium": "29", "heavy": "34"}
-                else:
-                    crf_map = {"light": "22", "medium": "27", "heavy": "32"}
-
-                include_real_audio = has_audio and not cfg["mute"]
-
-                cmd = [FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path]
-                if not include_real_audio:
-                    cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-
-                cmd += ["-max_muxing_queue_size", "1024"]
-
-                vf = []
-                if speed_factor != 1.0:
-                    vf.append(f"setpts={1.0 / speed_factor}*PTS")
-                if target_res != "orig":
-                    vf.append(f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear")
-                else:
-                    vf.append("scale='trunc(iw/2)*2':'trunc(ih/2)*2'")
-
-                cmd += [
-                    "-map", "0:v:0", "-c:v", v_codec,
-                    "-crf", crf_map.get(cfg["crf"], "27"),
-                    "-preset", "veryfast", "-pix_fmt", "yuv420p"
-                ]
-                if vf:
-                    cmd += ["-vf", ",".join(vf)]
-
-                if v_codec == "libx265":
-                    cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=10:bframes=2"]
-                elif v_codec == "libx264":
-                    cmd += ["-x264opts", "rc-lookahead=15:sync-lookahead=0:bframes=2"]
-
-                if include_real_audio:
-                    if speed_factor != 1.0:
-                        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k", "-filter:a", f"atempo={speed_factor}"]
-                    else:
-                        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k"]
-                else:
-                    cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "32k", "-shortest"]
-
-                cmd += ["-avoid_negative_ts", "make_zero"]
-                if out_ext in ["mp4", "mov", "m4a"]:
-                    cmd += ["-movflags", "+faststart"]
-                cmd += ["-progress", "pipe:2", output_path]
-
-            returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
-            if returncode != 0:
-                if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled") or returncode == -1:
-                    return
-                raise RuntimeError(f"خطای انکود ویدیو ({returncode}):\n{err_msg}")
-
-        elif media_type == "audio":
-            acfg = job["audio_cfg"]
-            br = acfg["bitrate"]
-            sp = float(acfg["speed"])
-            in_meta = await get_media_meta(input_path)
-            duration = in_meta["duration"]
-            eff_duration = duration / sp if (sp > 0 and duration > 0) else duration
-
-            cmd = [
-                FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path,
-                "-vn", "-map_metadata", "-1"
-            ]
-            
-            ar_rate = "32000" if br in ["48k", "64k"] else "44100"
-
-            if out_ext == "mp3":
-                cmd += ["-c:a", "libmp3lame", "-b:a", br, "-ar", ar_rate]
-            elif out_ext == "m4a":
-                cmd += ["-c:a", "aac", "-b:a", br, "-ar", ar_rate]
-            elif out_ext == "ogg":
-                cmd += ["-c:a", "libvorbis", "-b:a", br, "-ar", ar_rate]
-            elif out_ext == "flac":
-                cmd += ["-c:a", "flac"]
-
-            if sp != 1.0:
-                cmd += ["-filter:a", f"atempo={sp}"]
-            cmd += ["-progress", "pipe:2", output_path]
-
-            returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
-            if returncode != 0:
-                if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled") or returncode == -1:
-                    return
-                raise RuntimeError(f"خطا در پردازش فایل صوتی ({returncode}):\n{err_msg}")
-
-        if ACTIVE_PROCESSES[job_id]["cancelled"]:
-            return
-
-        if not os.path.exists(output_path):
-            raise RuntimeError("فایل نهایی ایجاد نشد.")
-
-        final_size = os.path.getsize(output_path)
-        ui_state["action"] = "upload"
-        ui_state["percent"] = 0.0
-
-        chat_id = job["chat_id"]
-        show_details = get_user_show_details(user_id)
-
-        if final_size >= initial_size:
-            reduction_str = "۰٪"
-            size_notice = "\n⚠️ <i>فایل از قبل حداکثر بهینه‌سازی ممکن را داشته است.</i>"
-        else:
-            reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
-            reduction_str = f"{reduction}%"
-            size_notice = ""
-
-        is_audio_extraction = (media_type == "video" and job["cfg"]["mode"] == "audio")
-
-        if is_audio_extraction:
-            caption = (
-                f"🎵 <b>صدای ویدیوی شما استخراج شد!</b>\n\n"
-                f"<blockquote>📁 فرمت: <b>{out_ext.upper()}</b>\n"
-                f"📦 حجم خروجی: <b>{final_size / (1024*1024):.2f} مگابایت</b></blockquote>"
-            )
-            if show_details:
-                caption += f"\n\n<blockquote>🛠 <b>مشخصات:</b> فرمت {out_ext.upper()} | موزیک صوتی</blockquote>"
-        elif media_type == "video":
-            caption = (
-                f"✨ <b>ویدیوی شما آماده شد!</b>\n\n"
-                f"<blockquote>📁 فرمت خروجی: <b>{out_ext.upper()}</b>\n"
-                f"📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} مگابایت</b>\n"
-                f"📉 حجم نهایی: <b>{final_size / (1024*1024):.2f} مگابایت</b>\n"
-                f"⚡️ میزان کاهش: <b>{reduction_str}</b></blockquote>"
-                f"{size_notice}"
-            )
-            if show_details:
-                codec_name = "H.265" if job['cfg']['codec'] == "h265" else "H.264"
-                res_lbl = "کیفیت اصلی" if job['cfg']['res'] == "orig" else f"{job['cfg']['res']}p"
-                caption += (
-                    f"\n\n<blockquote>🛠 <b>تنظیمات اعمال‌شده:</b>\n"
-                    f"▫️ کیفیت: <b>{res_lbl}</b> | انکودر: <b>{codec_name}</b>\n"
-                    f"▫️ سرعت ویدیو: <b>{job['cfg'].get('speed', '1.0')}x</b></blockquote>"
-                )
-        elif media_type == "audio":
-            caption = (
-                f"🎵 <b>فایل صوتی شما آماده شد!</b>\n\n"
-                f"<blockquote>📁 فرمت: <b>{out_ext.upper()}</b>\n"
-                f"📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} مگابایت</b>\n"
-                f"📉 حجم نهایی: <b>{final_size / (1024*1024):.2f} مگابایت</b>\n"
-                f"⚡️ میزان کاهش: <b>{reduction_str}</b></blockquote>"
-                f"{size_notice}"
-            )
-
-        post_buttons = []
-        if media_type == "video" and not is_audio_extraction:
-            post_buttons.append([PyroInlineKeyboardButton("🎵 استخراج صدای همین ویدیو", callback_data=f"quick_audio:{job_id}")])
-        post_markup = PyroInlineKeyboardMarkup(post_buttons) if post_buttons else None
-
-        if is_audio_extraction or media_type == "audio":
-            meta_aud = await get_media_meta(output_path)
-            sent_msg = await pyro.send_audio(
-                chat_id=chat_id,
-                audio=output_path,
-                duration=meta_aud.get("duration", 0),
-                caption=caption,
-                reply_markup=post_markup,
-                progress=pyro_progress,
-                progress_args=(ui_state,)
-            )
-            delivered_file_id = sent_msg.audio.file_id
-        elif media_type == "video":
-            meta_vid = await get_media_meta(output_path)
-            dur = meta_vid["duration"]
-            await generate_thumbnail(output_path, thumb_path, dur)
-            has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
-            sent_msg = await pyro.send_video(
-                chat_id=chat_id,
-                video=output_path,
-                duration=dur,
-                width=meta_vid["width"],
-                height=meta_vid["height"],
-                thumb=thumb_path if has_thumb else None,
-                caption=caption,
-                supports_streaming=True,
-                reply_markup=post_markup,
-                progress=pyro_progress,
-                progress_args=(ui_state,)
-            )
-            delivered_file_id = sent_msg.video.file_id
-
-        if token and token in ADMIN_MEDIA_STORE:
-            ADMIN_MEDIA_STORE[token]["comp_file_id"] = delivered_file_id
-
-        ui_state["done"] = True
-        ui_task.cancel()
-        await status_msg.delete()
-
-        end_cpu_sec = get_cpu_seconds()
-        end_wall_time = time.time()
-        cpu_used_sec = max(0.01, end_cpu_sec - start_cpu_sec)
-        wall_time_sec = max(0.01, end_wall_time - start_wall_time)
-
-        cpu_cost = cpu_used_sec * 0.00000772
-        ram_cost = wall_time_sec * 0.35 * 0.00000386
-        egress_gb = final_size / (1024 ** 3)
-        network_cost = egress_gb * 0.05
-        exact_cost = cpu_cost + ram_cost + network_cost
-
-        await record_job_stats(
-            user_id=user_id,
-            name=user_name,
-            username=username,
-            cost=exact_cost,
-            file_size_mb=initial_size / (1024 * 1024),
-            file_id=job["file_id"]
-        )
-
-        if user_id != ADMIN_ID:
-            admin_finish_kb = InlineKeyboardBuilder()
-            admin_finish_kb.button(text="🎬 دریافت فایل بهینه‌شده", callback_data=f"adm_comp:{token}")
-            admin_finish_kb.button(text="📹 دریافت فایل اصلی کاربر", callback_data=f"adm_orig:{token}")
-            admin_finish_kb.adjust(1)
-
-            username_str = f"@{username}" if username else "ندارد"
-            if is_audio_extraction:
-                log_2 = (
-                    "✅ <b>استخراج صدای ویدیو تکمیل شد</b>\n\n"
-                    f"<blockquote>👤 کاربر: {html.escape(user_name)}\n"
-                    f"🆔 شناسه: <code>{user_id}</code>\n"
-                    f"🔗 نام کاربری: {html.escape(username_str)}\n"
-                    f"📁 فرمت: {out_ext.upper()}\n"
-                    f"📦 حجم خروجی: {final_size / (1024*1024):.2f} مگابایت\n"
-                    f"💵 هزینه پردازش: ${exact_cost:.5f}</blockquote>"
-                )
-            else:
-                log_2 = (
-                    "✅ <b>پردازش رسانه تکمیل شد</b>\n\n"
-                    f"<blockquote>👤 کاربر: {html.escape(user_name)}\n"
-                    f"🆔 شناسه: <code>{user_id}</code>\n"
-                    f"🔗 نام کاربری: {html.escape(username_str)}\n"
-                    f"📁 فرمت: {out_ext.upper()}\n"
-                    f"📦 حجم ورودی: {initial_size / (1024*1024):.2f} مگابایت\n"
-                    f"📉 حجم خروجی: {final_size / (1024*1024):.2f} مگابایت\n"
-                    f"⚡️ کاهش حجم: {reduction_str}\n"
-                    f"💵 هزینه پردازش: ${exact_cost:.5f}</blockquote>"
-                )
+@dp.callback_query(F.data.startswith("stop:"))
+async def stop_processing(callback: aiotypes.CallbackQuery):
+    job_id = callback.data.split(":")[1]
+    
+    if job_id in ACTIVE_PROCESSES or job_id in RUNNING_TASKS:
+        ACTIVE_PROCESSES[job_id]["cancelled"] = True
+        proc = ACTIVE_PROCESSES.get(job_id, {}).get("proc")
+        if proc:
             try:
-                await bot.send_message(chat_id=ADMIN_ID, text=log_2, reply_markup=admin_finish_kb.as_markup(), parse_mode="HTML")
-            except Exception as adm_e:
-                logging.error(f"Finish log error: {adm_e}")
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
-    finally:
-        ui_state["done"] = True
-        if not ui_task.done():
-            ui_task.cancel()
-        for p in (input_path, output_path, thumb_path):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        task = RUNNING_TASKS.get(job_id)
+        if task and not task.done():
+            task.cancel()
+
+        await callback.answer("پردازش متوقف شد.")
+        await callback.message.edit_text("🛑 پردازش متوقف شد و نوبت صف آزاد شد.")
+    else:
+        await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("arun:"))
+async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
+    global QUEUE_COUNTER
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    _, br, af, sp = callback.data.split(":")
+    
+    panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
+    orig_msg = callback.message.reply_to_message
+    file_id = panel_meta.get("file_id") or (orig_msg.audio.file_id if orig_msg and (orig_msg.audio or orig_msg.voice or orig_msg.document) else None)
+    file_size = panel_meta.get("file_size") or (orig_msg.audio.file_size if orig_msg and (orig_msg.audio or orig_msg.voice or orig_msg.document) else 10 * 1024 * 1024)
+    orig_msg_id = panel_meta.get("orig_msg_id") or (orig_msg.message_id if orig_msg else callback.message.message_id)
+
+    if not file_id:
+        return await callback.message.edit_text("❌ فایل صوتی یافت نشد.")
+
+    user_id = callback.from_user.id
+    user_name = callback.from_user.full_name or "کاربر"
+    username = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
+    job_id = f"aud_{callback.message.chat.id}_{callback.message.message_id}"
+
+    token = uuid.uuid4().hex[:8]
+    if len(ADMIN_MEDIA_STORE) > 500:
+        ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
+    ADMIN_MEDIA_STORE[token] = {
+        "orig_file_id": file_id,
+        "comp_file_id": None,
+        "is_audio": True
+    }
+
+    file_size_mb = file_size / (1024 * 1024)
+
+    if user_id != ADMIN_ID:
+        u_stat = await get_user_stat(user_id)
+        user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
+        admin_req_kb = InlineKeyboardBuilder()
+        admin_req_kb.button(text="🎵 دریافت فایل اصلی", callback_data=f"adm_orig:{token}")
+
+        log_1 = (
+            "🎵 <b>درخواست بهینه‌سازی صدا</b>\n\n"
+            f"<blockquote>👤 کاربر: {html.escape(user_name)}\n"
+            f"🆔 شناسه: <code>{user_id}</code>\n"
+            f"🔗 نام کاربری: {html.escape(username)}\n"
+            f"📦 حجم ورودی: {file_size_mb:.2f} مگابایت\n"
+            f"⚙️ تنظیمات: بیت‌ریت {br} | فرمت {af.upper()} | سرعت {sp}x\n"
+            f"💵 هزینه کل تا الان: ${user_cost:.4f}</blockquote>"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=log_1, reply_markup=admin_req_kb.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
+
+    QUEUE_COUNTER += 1
+    status_msg = await callback.message.edit_text(
+        f"⏳ <b>فایل صوتی در صف پردازش قرار گرفت...</b>\n"
+        f"👥 نوبت تقریبی: <b>نفر {JOB_QUEUE.qsize() + 1}</b>",
+        reply_markup=get_cancel_keyboard(job_id),
+        parse_mode="HTML"
+    )
+
+    ACTIVE_PROCESSES[job_id] = {"cancelled": False, "proc": None}
+    await JOB_QUEUE.put((10.0, QUEUE_COUNTER, {
+        "job_id": job_id,
+        "media_type": "audio",
+        "audio_cfg": {"bitrate": br, "fmt": af, "speed": sp},
+        "msg_id": orig_msg_id,
+        "file_size": file_size,
+        "file_id": file_id,
+        "chat_id": callback.message.chat.id,
+        "user": callback.from_user,
+        "user_id": user_id,
+        "orig_ext": panel_meta.get("orig_ext", "mp3"),
+        "status_msg": status_msg,
+        "token": token
+    }))
+
+
+@dp.callback_query(F.data.startswith("quick_audio:"))
+async def quick_audio_extract(callback: aiotypes.CallbackQuery):
+    await callback.answer("در حال آماده‌سازی...")
+    job_id = callback.data.split(":", 1)[1]
+    req = USER_REQUESTS.get(job_id)
+    if not req:
+        return await callback.message.reply("❌ اطلاعات این ویدیو منقضی شده است.")
+    
+    audio_cfg = {
+        "mode": "audio", "res": "orig", "codec": "h264",
+        "crf": "medium", "mute": False, "speed": "1.0", "fmt": "mp3"
+    }
+    
+    status_msg = await callback.message.reply(
+        "⏳ <b>در صف استخراج صوت قرار گرفت...</b>",
+        parse_mode="HTML"
+    )
+    
+    user_id = callback.from_user.id
+    token = uuid.uuid4().hex[:8]
+    if len(ADMIN_MEDIA_STORE) > 500:
+        ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
+    ADMIN_MEDIA_STORE[token] = {
+        "orig_file_id": req["file_id"],
+        "comp_file_id": None,
+        "is_audio": True
+    }
+
+    if user_id != ADMIN_ID:
+        u_stat = await get_user_stat(user_id)
+        user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
+        username_str = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
+        admin_req_kb = InlineKeyboardBuilder()
+        admin_req_kb.button(text="📹 دریافت ویدیوی ارسالی", callback_data=f"adm_orig:{token}")
+
+        log_1 = (
+            "📹 <b>درخواست استخراج صدای ویدیو</b>\n\n"
+            f"<blockquote>👤 کاربر: {html.escape(callback.from_user.full_name or 'کاربر')}\n"
+            f"🆔 شناسه: <code>{user_id}</code>\n"
+            f"🔗 نام کاربری: {html.escape(username_str)}\n"
+            "📦 نوع: استخراج صوت MP3\n"
+            f"💵 هزینه کل تا الان: ${user_cost:.4f}</blockquote>"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=log_1, reply_markup=admin_req_kb.as_markup(), parse_mode="HTML")
+        except Exception:
+            pass
+
+    new_job_id = f"audio_{uuid.uuid4().hex[:6]}"
+    ACTIVE_PROCESSES[new_job_id] = {"cancelled": False, "proc": None}
+    await JOB_QUEUE.put((1.0, 0, {
+        "job_id": new_job_id, "media_type": "video", "cfg": audio_cfg, "msg_id": callback.message.message_id,
+        "file_size": 10 * 1024 * 1024, "file_id": req["file_id"],
+        "chat_id": callback.message.chat.id, "user": callback.from_user,
+        "user_id": user_id,
+        "orig_ext": "mp4",
+        "status_msg": status_msg,
+        "token": token
+    }))
+
+
+@dp.callback_query(F.data.startswith("run:"))
+async def enqueue_task(callback: aiotypes.CallbackQuery):
+    global QUEUE_COUNTER
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    cfg = decode_cfg(callback.data[4:])
+    
+    panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
+    orig_msg = callback.message.reply_to_message
+    
+    file_id = panel_meta.get("file_id") or (orig_msg.video.file_id if orig_msg and orig_msg.video else (orig_msg.document.file_id if orig_msg and orig_msg.document else None))
+    file_size = panel_meta.get("file_size") or (orig_msg.video.file_size if orig_msg and orig_msg.video else (orig_msg.document.file_size if orig_msg and orig_msg.document else 0))
+    orig_msg_id = panel_meta.get("orig_msg_id") or (orig_msg.message_id if orig_msg else callback.message.message_id)
+    orig_ext = panel_meta.get("orig_ext") or (detect_file_extension(orig_msg) if orig_msg else "mp4")
+    in_res_str = panel_meta.get("res_str", "نامشخص")
+
+    if not file_id:
+        return await callback.message.edit_text("❌ فایل ویدیوی مرجع پیدا نشد.")
+
+    user_id = callback.from_user.id
+    user_name = callback.from_user.full_name or "کاربر"
+    username = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
+    job_id = f"{callback.message.chat.id}_{callback.message.message_id}"
+
+    USER_REQUESTS[job_id] = {
+        "file_id": file_id,
+        "user_id": user_id,
+        "name": user_name
+    }
+
+    token = uuid.uuid4().hex[:8]
+    if len(ADMIN_MEDIA_STORE) > 500:
+        ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
+    ADMIN_MEDIA_STORE[token] = {
+        "orig_file_id": file_id,
+        "comp_file_id": None,
+        "is_audio": (cfg["mode"] == "audio")
+    }
+
+    file_size_mb = file_size / (1024 * 1024)
+
+    if user_id != ADMIN_ID:
+        u_stat = await get_user_stat(user_id)
+        user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
+        
+        cfg_res_label = "کیفیت اصلی" if cfg['res'] == "orig" else f"{cfg['res']}p"
+        cfg_str = f"{cfg['mode']} | {cfg_res_label} | {cfg['codec']}" if cfg['mode'] == "video" else f"استخراج صوت ({cfg['fmt'].upper()})"
+        admin_req_kb = InlineKeyboardBuilder()
+        admin_req_kb.button(text="📹 دریافت ویدیوی ارسالی", callback_data=f"adm_orig:{token}")
+
+        log_1 = (
+            "📹 <b>درخواست جدید پردازش ویدیو</b>\n\n"
+            f"<blockquote>👤 کاربر: {html.escape(user_name)}\n"
+            f"🆔 شناسه: <code>{user_id}</code>\n"
+            f"🔗 نام کاربری: {html.escape(username)}\n"
+            f"📁 فرمت: {orig_ext.upper()}\n"
+            f"📦 حجم: {file_size_mb:.2f} مگابایت\n"
+            f"📐 کیفیت ورودی: {in_res_str}\n"
+            f"⚙️ تنظیمات: {html.escape(cfg_str)}\n"
+            f"💵 هزینه کل تا الان: ${user_cost:.4f}</blockquote>"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=log_1, reply_markup=admin_req_kb.as_markup(), parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Request log error: {e}")
+
+    priority = calculate_priority(user_id, file_size)
+    QUEUE_COUNTER += 1
+
+    queue_pos = JOB_QUEUE.qsize() + 1
+    priority_label = "اولویت بالا" if priority < 20 else "استاندارد"
+
+    status_msg = await callback.message.edit_text(
+        f"⏳ <b>در صف پردازش قرار گرفت...</b>\n"
+        f"👥 نوبت: <b>نفر {queue_pos}</b>\n"
+        f"🚀 اولویت: <b>{priority_label}</b>",
+        reply_markup=get_cancel_keyboard(job_id),
+        parse_mode="HTML"
+    )
+
+    ACTIVE_PROCESSES[job_id] = {"cancelled": False, "proc": None}
+    await JOB_QUEUE.put((priority, QUEUE_COUNTER, {
+        "job_id": job_id, "media_type": "video", "cfg": cfg, "msg_id": orig_msg_id,
+        "file_size": file_size, "file_id": file_id,
+        "chat_id": callback.message.chat.id, "user": callback.from_user,
+        "user_id": user_id,
+        "orig_ext": orig_ext,
+        "status_msg": status_msg,
+        "token": token
+    }))
 
 
 async def main():
