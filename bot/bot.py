@@ -421,7 +421,7 @@ async def get_top_users(limit: int = 10) -> list[dict]:
                            COALESCE(username, '') as username, 
                            CAST(COALESCE(total_cost, 0.0) AS FLOAT) as total_cost, 
                            CAST(COALESCE(total_jobs, 0) AS INT) as total_jobs, 
-                           CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb,
+                           CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb, 
                            max_vid_file_id, 
                            CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
                            CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
@@ -469,7 +469,7 @@ async def get_user_stat(user_id: int) -> dict | None:
                            COALESCE(username, '') as username, 
                            CAST(COALESCE(total_cost, 0.0) AS FLOAT) as total_cost, 
                            CAST(COALESCE(total_jobs, 0) AS INT) as total_jobs, 
-                           CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb,
+                           CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb, 
                            max_vid_file_id, 
                            CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
                            CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
@@ -650,7 +650,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
 pyro.save_file = types.MethodType(custom_save_file, pyro)
 
 
-# --- کیبوردهای شیک و مدرن کاربری ---
+# --- کیبوردهای کاربری ---
 def get_main_reply_keyboard(user_id: int):
     builder = ReplyKeyboardBuilder()
     builder.button(text="⚙️ تنظیمات")
@@ -713,7 +713,6 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4"):
     mode = cfg["mode"]
     res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
 
-    # انتخاب عملکرد اصلی: تبدیل ویدیو یا استخراج موزیک
     b.button(text="🎬 تبدیل و فشرده‌سازی" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
     b.button(text="🎵 فقط صدا (MP3)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
@@ -845,7 +844,7 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
         pass
 
 
-# --- هندلر فرمان Start با کادربندی شیک و تاریخ لحظه‌ای ---
+# --- هندلر فرمان Start ---
 @dp.message(CommandStart())
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     await state.clear()
@@ -873,7 +872,7 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     await message.answer("📌 دسترسی سریع به بخش‌های مختلف ربات:", reply_markup=builder.as_markup())
 
 
-# --- حساب و آمار کاربر با نوار پیشرفت گرافیکی ---
+# --- حساب و آمار کاربر ---
 @dp.message(F.text == "📊 حساب و آمار من")
 @dp.callback_query(F.data == "show_my_stats")
 async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQuery):
@@ -911,7 +910,7 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
         await event.answer(text, parse_mode="HTML")
 
 
-# --- راهنمای فشرده‌سازی ویدیوها ---
+# --- راهنمای فشرده‌سازی ---
 @dp.callback_query(F.data == "open_compression_guide")
 async def send_compression_guide(callback: aiotypes.CallbackQuery):
     await callback.answer()
@@ -985,6 +984,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     chat_id = item["chat_id"]
     user_id = item["user_id"]
     user_name = item["name"]
+    username = item["username"]
     out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
 
     status_msg = await callback.message.edit_text(
@@ -1011,8 +1011,8 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         _, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            err_text = stderr.decode(errors="ignore")[-300:]
-            raise RuntimeError(f"خطای yt-dlp: {err_text}")
+            err_text = stderr.decode(errors="ignore")
+            raise RuntimeError(f"yt-dlp failure: {err_text[-400:]}")
 
         for fname in os.listdir(DOWNLOAD_DIR):
             if fname.startswith(f"ytdl_{token}") and not fname.endswith(".part"):
@@ -1020,7 +1020,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
                 break
 
         if not downloaded_file or not os.path.exists(downloaded_file):
-            raise RuntimeError("فایل دریافت نشد یا حجم آن از ۳۰۰ مگابایت بیشتر است.")
+            raise RuntimeError("File not found or exceeded size limit")
 
         fsize = os.path.getsize(downloaded_file)
         if fsize > MAX_FILE_SIZE:
@@ -1059,9 +1059,26 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
 
     except Exception as e:
         tb = traceback.format_exc()
-        logging.error(f"yt-dlp error: {tb}")
+        logging.error(f"yt-dlp error for user {user_id}: {tb}")
+
+        # ارسال جزئیات فنی و لاگ خام منحصراً برای ادمین
+        admin_alert = (
+            f"🚨 <b>خطای دانلود لینک (yt-dlp):</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>کاربر:</b> {html.escape(user_name)} (<code>{user_id}</code>)\n"
+            f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
+            f"🌐 <b>لینک ارسالی:</b> <code>{html.escape(url[:150])}</code>\n"
+            f"📋 <b>لاگ فنی:</b>\n<pre>{html.escape(str(e)[:500])}</pre>"
+        )
         try:
-            await status_msg.edit_text(f"⚠️ دانلود با خطا مواجه شد:\n<code>{html.escape(str(e)[:200])}</code>", parse_mode="HTML")
+            await bot.send_message(chat_id=ADMIN_ID, text=admin_alert, parse_mode="HTML")
+        except Exception:
+            pass
+
+        # پیام امن و تصفیه‌شده برای کاربر عادی
+        user_error_message = "⚠️ متأسفانه دانلود این ویدیو با خطا مواجه شد.\nممکن است لینک ارسالی نامعتبر، خصوصی، دارای محدودیت منطقه‌ای/سنی بوده یا حجم آن بیش از حد مجاز باشد."
+        try:
+            await status_msg.edit_text(user_error_message, parse_mode="HTML")
         except Exception:
             pass
 
@@ -1606,7 +1623,7 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
         await message.reply("✅ پیام شما برای پشتیبانی ارسال گردید. به زودی پاسخ را دریافت خواهید کرد 💌")
     except Exception as e:
         logging.error(f"Failed to forward message to admin: {e}")
-        await message.reply("⚠️ خطایی رخ داد، لطفاً مجدداً امتحان کنید.")
+        await message.reply("⚠️ خطایی در ارسال پیام رخ داد. لطفاً دوباره تلاش کنید.")
 
     await state.clear()
 
@@ -1672,7 +1689,7 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
         await callback.message.edit_text("✅ ویدیو برای بررسی ادمین ارسال گردید.")
     except Exception as e:
         logging.error(f"Error forwarding video: {e}")
-        await callback.message.edit_text("⚠️ خطا در ارسال ویدیو.")
+        await callback.message.edit_text("⚠️ ارسال ویدیو ناموفق بود.")
 
 
 @dp.callback_query(F.data.startswith("err_cancel_vid:"))
@@ -1697,7 +1714,7 @@ def detect_file_extension(message: aiotypes.Message) -> str:
     return "mp4"
 
 
-# --- دریافت ویدیو و نمایش کارت اطلاعات ورودی ---
+# --- دریافت ویدیو و نمایش تنظیمات ---
 @dp.message(F.video | F.document)
 async def handle_video(message: aiotypes.Message):
     u = message.from_user
@@ -1796,7 +1813,7 @@ async def stop_processing(callback: aiotypes.CallbackQuery):
         await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
 
 
-# --- استخراج سریع صدا از ویدیوی آماده شده ---
+# --- استخراج صدا از ویدیو ---
 @dp.callback_query(F.data.startswith("quick_audio:"))
 async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     await callback.answer("آماده‌سازی استخراج صدا...")
@@ -1919,6 +1936,7 @@ async def queue_worker():
             user_name = u.full_name if u else "نامشخص"
             username = f"@{u.username}" if (u and u.username) else "ندارد"
 
+            # گزارش خطای فنی کامل فقط برای ادمین
             admin_err_alert = (
                 f"🚨 <b>گزارش خطای خودکار پردازش:</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -1947,10 +1965,12 @@ async def queue_worker():
             err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
             err_kb.adjust(1)
 
+            # پیام تمیز، راهگشا و بدون فاش‌سازی لاگ برای کاربر عادی
             user_notice = (
-                "⚠️ خطا در تبدیل ویدیوی شما رخ داد.\n\n"
-                "📨 <b>گزارش فنی برای بررسی به پشتیبانی ارسال گردید.</b>\n\n"
-                "❓ مایلید خود ویدیو را جهت رفع باگ به پشتیبانی ارسال کنید؟"
+                "⚠️ متأسفانه در فرآیند تبدیل و فشرده‌سازی این فایل مشکلی رخ داد.\n\n"
+                "📌 ممکن است فایل ارسالی فرمت استانداردی نداشته یا آسیب دیده باشد.\n"
+                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b>\n\n"
+                "❓ مایلید فایل اصلی را هم جهت بررسی دقیق برای توسعه‌دهنده ارسال کنید؟"
             )
             try:
                 await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
@@ -2056,7 +2076,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
             last_err = e
             await asyncio.sleep(2)
 
-    raise RuntimeError(f"خطا در دانلود:\n{last_err}")
+    raise RuntimeError(f"خطا در دانلود فایل: {last_err}")
 
 
 # --- تابع پردازش ویدیو و صدا ---
@@ -2272,7 +2292,6 @@ async def process_job(job: dict):
 
         final_size = os.path.getsize(output_path)
         
-        # تشخیص هوشمند تغییرات حجم
         if final_size >= initial_size and mode == "video":
             diff_mb = (final_size - initial_size) / (1024 * 1024)
             size_notice = f"\n⚠️ <i>حجم خروجی {diff_mb:.2f}MB بیشتر شد (فایل ورودی قبلاً بیش‌ازحد فشرده شده است).</i>"
@@ -2309,7 +2328,6 @@ async def process_job(job: dict):
         has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
         chat_id = job["chat_id"]
 
-        # دکمه‌های کاربردی سریع زیر خروجی
         post_buttons = []
         if mode == "video":
             post_buttons.append([PyroInlineKeyboardButton("🎵 استخراج صدای همین ویدیو", callback_data=f"quick_audio:{job_id}")])
