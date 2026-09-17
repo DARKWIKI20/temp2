@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.5"
+BOT_VERSION = "2.4.6"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
@@ -82,6 +82,7 @@ ADMIN_MEDIA_STORE = {}
 VIDEO_META_CACHE = {}
 DB_POOL = None
 PREFS_CACHE = {}
+LAST_STATS_MESSAGES = {}
 
 JOB_QUEUE = asyncio.PriorityQueue()
 QUEUE_COUNTER = 0
@@ -221,6 +222,8 @@ async def init_db():
                     max_vid_date TEXT
                 );
             """)
+            await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_at TIMESTAMP;")
+            await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_file_id TEXT;")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     admin_msg_id BIGINT PRIMARY KEY,
@@ -318,6 +321,149 @@ async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tup
     return True, current_mb, limit
 
 
+async def touch_last_video_request(user_id: int, name: str = "", username: str = "", file_id: str | None = None):
+    """ثبت زمان آخرین درخواست واقعی ویدیو برای مرتب‌سازی لیست ادمین."""
+    now = datetime.datetime.now(TEHRAN_TZ).replace(tzinfo=None)
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO user_stats (
+                        user_id, name, username, today_date, total_cost, total_jobs, today_mb,
+                        last_request_at, last_request_file_id
+                    )
+                    VALUES ($1, $2, $3, $4, 0.0, 0, 0.0, $5, $6)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
+                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END,
+                        last_request_at = CASE
+                            WHEN user_stats.last_request_at IS NULL OR EXCLUDED.last_request_at > user_stats.last_request_at
+                            THEN EXCLUDED.last_request_at ELSE user_stats.last_request_at END,
+                        last_request_file_id = CASE
+                            WHEN user_stats.last_request_at IS NULL OR EXCLUDED.last_request_at >= user_stats.last_request_at
+                            THEN EXCLUDED.last_request_file_id ELSE user_stats.last_request_file_id END;
+                """, user_id, name, username, get_tehran_date(), now, file_id)
+        except Exception as e:
+            logging.error(f"DB last-request record error: {e}")
+
+    stats = load_backup_stats()
+    stats.setdefault("users", {})
+    u = stats["users"].setdefault(str(user_id), {
+        "name": name,
+        "username": username,
+        "total_cost": 0.0,
+        "total_jobs": 0,
+        "today_date": get_tehran_date().isoformat(),
+        "today_mb": 0.0,
+        "max_video": None,
+        "last_request_at": None,
+        "last_request_file_id": None,
+    })
+    if name:
+        u["name"] = name
+    if username:
+        u["username"] = username
+    previous = u.get("last_request_at")
+    if not previous or now_str >= str(previous):
+        u["last_request_at"] = now_str
+        if file_id:
+            u["last_request_file_id"] = file_id
+    save_backup_stats(stats)
+
+
+async def get_users_for_admin_message() -> list[dict]:
+    """همه کاربران، مرتب‌شده از آخرین درخواست ویدیو به قدیمی‌ترین."""
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT user_id,
+                           COALESCE(name, 'کاربر') AS name,
+                           COALESCE(username, '') AS username,
+                           last_request_at
+                    FROM user_stats
+                    ORDER BY last_request_at DESC NULLS LAST, user_id DESC;
+                """)
+                if rows:
+                    return [dict(r) for r in rows]
+        except Exception as e:
+            logging.error(f"Admin user list DB error: {e}")
+
+    stats = load_backup_stats()
+    users = []
+    for uid_str, data in stats.get("users", {}).items():
+        users.append({
+            "user_id": int(uid_str),
+            "name": data.get("name") or "کاربر",
+            "username": data.get("username") or "",
+            "last_request_at": data.get("last_request_at"),
+        })
+    users.sort(key=lambda x: (x.get("last_request_at") or "", int(x["user_id"])), reverse=True)
+    return users
+
+
+ADMIN_USER_PAGE_SIZE = 12
+
+
+def build_admin_user_list_keyboard(users: list[dict], page: int):
+    b = InlineKeyboardBuilder()
+    total_pages = max(1, math.ceil(len(users) / ADMIN_USER_PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    start = page * ADMIN_USER_PAGE_SIZE
+    chunk = users[start:start + ADMIN_USER_PAGE_SIZE]
+
+    for idx, u in enumerate(chunk, start=start + 1):
+        name = (u.get("name") or "کاربر").strip()
+        username = u.get("username") or ""
+        label = f"{idx}. {name[:22]}"
+        if username:
+            label += f" | {username[:14]}"
+        b.button(text=label, callback_data=f"admin_pick_user:{u['user_id']}")
+
+    nav = []
+    if page > 0:
+        nav.append(("⬅️ قبلی", f"admin_user_list:{page - 1}"))
+    nav.append((f"صفحه {page + 1}/{total_pages}", "admin_user_list_noop"))
+    if page < total_pages - 1:
+        nav.append(("بعدی ➡️", f"admin_user_list:{page + 1}"))
+    for text, data in nav:
+        b.button(text=text, callback_data=data)
+
+    b.button(text="🔴 برگشت به پنل", callback_data="admin_back_main")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def format_admin_user_list_text(users: list[dict], page: int) -> str:
+    total_pages = max(1, math.ceil(len(users) / ADMIN_USER_PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    start = page * ADMIN_USER_PAGE_SIZE
+    chunk = users[start:start + ADMIN_USER_PAGE_SIZE]
+
+    lines = [
+        "👤 <b>انتخاب کاربر برای ارسال پیام</b>",
+        f"<blockquote>👥 کل کاربران: <b>{len(users)}</b> نفر\n"
+        "🕒 ترتیب لیست: آخرین درخواست ویدیو اول</blockquote>",
+        "",
+    ]
+
+    for idx, u in enumerate(chunk, start=start + 1):
+        name = html.escape((u.get("name") or "کاربر").strip())
+        uname = html.escape(u.get("username") or "ندارد")
+        last_req = u.get("last_request_at")
+        if hasattr(last_req, "strftime"):
+            last_req = last_req.strftime("%Y-%m-%d %H:%M")
+        last_req = html.escape(str(last_req)) if last_req else "هنوز ثبت نشده"
+        lines.append(
+            f"<b>{idx}.</b> {name} | {uname} | <code>{u['user_id']}</code>\n"
+            f"└ آخرین درخواست: {last_req}"
+        )
+
+    return "\n".join(lines)
+
+
 async def record_job_stats(user_id: int, name: str, username: str, cost: float, file_size_mb: float, file_id: str):
     today = get_tehran_date()
     now_str = datetime.datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M")
@@ -328,9 +474,10 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
                 await conn.execute("""
                     INSERT INTO user_stats (
                         user_id, name, username, total_cost, total_jobs,
-                        today_date, today_mb, max_vid_file_id, max_vid_cost, max_vid_size_mb, max_vid_date
+                        today_date, today_mb, max_vid_file_id, max_vid_cost, max_vid_size_mb, max_vid_date,
+                        last_request_at, last_request_file_id
                     )
-                    VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $4, $6, $8)
+                    VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $4, $6, $8, $8::timestamp, $7)
                     ON CONFLICT (user_id) DO UPDATE SET
                         name = EXCLUDED.name,
                         username = EXCLUDED.username,
@@ -356,7 +503,9 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
                         max_vid_date = CASE 
                             WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_date
                             ELSE user_stats.max_vid_date
-                        END;
+                        END,
+                        last_request_at = COALESCE(user_stats.last_request_at, EXCLUDED.last_request_at),
+                        last_request_file_id = COALESCE(user_stats.last_request_file_id, EXCLUDED.last_request_file_id);
                 """, user_id, name, username, cost, today, file_size_mb, file_id, now_str)
         except Exception as e:
             logging.error(f"DB record error: {e}")
@@ -374,7 +523,9 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
             "total_jobs": 0,
             "today_date": today.isoformat(),
             "today_mb": 0.0,
-            "max_video": None
+            "max_video": None,
+            "last_request_at": None,
+            "last_request_file_id": None
         }
 
     u = stats["users"][u_key]
@@ -388,6 +539,10 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
     else:
         u["today_date"] = today.isoformat()
         u["today_mb"] = round(file_size_mb, 2)
+
+    if not u.get("last_request_at"):
+        u["last_request_at"] = now_str + ":00"
+        u["last_request_file_id"] = file_id
 
     cur_max = u.get("max_video")
     if cur_max is None or cost >= float(cur_max.get("cost", 0.0)):
@@ -428,7 +583,9 @@ async def register_user(user_id: int, name: str = "", username: str = ""):
             "total_jobs": 0,
             "today_date": today.isoformat(),
             "today_mb": 0.0,
-            "max_video": None
+            "max_video": None,
+            "last_request_at": None,
+            "last_request_file_id": None
         }
         save_backup_stats(stats)
 
@@ -510,7 +667,9 @@ async def get_user_stat(user_id: int) -> dict | None:
                            max_vid_file_id, 
                            CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
                            CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
-                           max_vid_date
+                           max_vid_date,
+                           last_request_at,
+                           last_request_file_id
                     FROM user_stats
                     WHERE user_id = $1;
                 """, user_id)
@@ -537,7 +696,9 @@ async def get_user_stat(user_id: int) -> dict | None:
         "max_vid_file_id": mv.get("file_id"),
         "max_vid_cost": float(mv.get("cost") or 0.0),
         "max_vid_size_mb": float(mv.get("size_mb") or 0.0),
-        "max_vid_date": mv.get("date")
+        "max_vid_date": mv.get("date"),
+        "last_request_at": u.get("last_request_at"),
+        "last_request_file_id": u.get("last_request_file_id")
     }
 
 
@@ -1061,6 +1222,14 @@ async def show_changelog_handler(callback: aiotypes.CallbackQuery):
 async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = event.from_user.id
+
+    stats_chat_id = event.message.chat.id if isinstance(event, aiotypes.CallbackQuery) else event.chat.id
+    previous_msg_id = LAST_STATS_MESSAGES.get(user_id)
+    if previous_msg_id:
+        try:
+            await bot.delete_message(chat_id=stats_chat_id, message_id=previous_msg_id)
+        except Exception:
+            pass
     u_stat = await get_user_stat(user_id)
     limit = await get_daily_limit_mb()
 
@@ -1087,9 +1256,10 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
     )
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
-        await event.message.answer(text, parse_mode="HTML")
+        sent = await event.message.answer(text, parse_mode="HTML")
     else:
-        await event.answer(text, parse_mode="HTML")
+        sent = await event.answer(text, parse_mode="HTML")
+    LAST_STATS_MESSAGES[user_id] = sent.message_id
 
 
 @dp.callback_query(F.data == "open_compression_guide", StateFilter("*"))
@@ -1171,6 +1341,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     user_id = item["user_id"]
     user_name = item["name"]
     username = item["username"]
+    await touch_last_video_request(user_id, user_name, username.lstrip("@"), None)
     out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
 
     status_msg = await callback.message.edit_text(
@@ -1612,16 +1783,79 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
 async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
+    await state.clear()
     await callback.answer()
+    users = await get_users_for_admin_message()
+    text = format_admin_user_list_text(users, 0)
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=build_admin_user_list_keyboard(users, 0),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            text,
+            reply_markup=build_admin_user_list_keyboard(users, 0),
+            parse_mode="HTML"
+        )
+
+
+@dp.callback_query(F.data.startswith("admin_user_list:"), StateFilter("*"))
+async def paginate_admin_user_list(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    page = int(callback.data.split(":")[1])
+    users = await get_users_for_admin_message()
+    total_pages = max(1, math.ceil(len(users) / ADMIN_USER_PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    await callback.answer()
+    await callback.message.edit_text(
+        format_admin_user_list_text(users, page),
+        reply_markup=build_admin_user_list_keyboard(users, page),
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data == "admin_user_list_noop", StateFilter("*"))
+async def admin_user_list_noop(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id == ADMIN_ID:
+        await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_pick_user:"), StateFilter("*"))
+async def select_admin_message_user(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    target_id = int(callback.data.split(":")[1])
+
+    user_name = "کاربر"
+    username = "ندارد"
+    try:
+        chat = await bot.get_chat(target_id)
+        user_name = chat.full_name or "کاربر"
+        username = f"@{chat.username}" if chat.username else "ندارد"
+    except Exception:
+        stat = await get_user_stat(target_id)
+        if stat:
+            user_name = stat.get("name") or "کاربر"
+            username = f"@{stat.get('username')}" if stat.get("username") else "ندارد"
+
+    await state.update_data(target_id=target_id, user_name=user_name, username=username)
+    await state.set_state(AdminMessageState.waiting_for_single_content)
+    await callback.answer()
+
     cancel_b = InlineKeyboardBuilder()
     cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
-
-    await callback.message.answer(
-        "👤 <b>آیدی عددی</b> کاربر رو بفرست:",
+    await callback.message.edit_text(
+        f"🎯 <b>کاربر انتخاب شد</b>\n\n"
+        f"<blockquote>👤 نام: {html.escape(user_name)}\n"
+        f"🔗 یوزرنیم: {html.escape(username)}\n"
+        f"🆔 آیدی: <code>{target_id}</code></blockquote>\n\n"
+        "حالا پیام یا فایلی که می‌خوای برای این کاربر بفرستی رو ارسال کن:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
-    await state.set_state(AdminMessageState.waiting_for_user_id)
 
 
 @dp.callback_query(F.data.startswith("reply_to_user:"), StateFilter("*"))
@@ -2237,6 +2471,8 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     }
 
     file_size_mb = file_size / (1024 * 1024)
+    if panel_meta.get("media_type") == "video":
+        await touch_last_video_request(user_id, user_name, callback.from_user.username or "", file_id)
 
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
@@ -2302,6 +2538,7 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     )
 
     user_id = callback.from_user.id
+    await touch_last_video_request(user_id, callback.from_user.full_name or "کاربر", callback.from_user.username or "", req["file_id"])
     token = uuid.uuid4().hex[:8]
     if len(ADMIN_MEDIA_STORE) > 500:
         ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
@@ -2386,6 +2623,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     }
 
     file_size_mb = file_size / (1024 * 1024)
+    await touch_last_video_request(user_id, user_name, callback.from_user.username or "", file_id)
 
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
