@@ -238,39 +238,6 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_preferences (
-                    user_id BIGINT PRIMARY KEY REFERENCES user_stats(user_id) ON DELETE CASCADE,
-                    show_details BOOLEAN NOT NULL DEFAULT TRUE,
-                    default_cfg JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS video_requests (
-                    id BIGSERIAL PRIMARY KEY,
-                    job_id TEXT,
-                    token TEXT,
-                    user_id BIGINT NOT NULL REFERENCES user_stats(user_id) ON DELETE CASCADE,
-                    request_type TEXT NOT NULL DEFAULT 'video',
-                    status TEXT NOT NULL DEFAULT 'requested',
-                    file_id TEXT,
-                    chat_id BIGINT,
-                    message_id BIGINT,
-                    file_size_mb DOUBLE PRECISION DEFAULT 0,
-                    width INT,
-                    height INT,
-                    source_url TEXT,
-                    service TEXT,
-                    config JSONB,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    completed_at TIMESTAMP
-                );
-            """)
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_video_requests_user_created ON video_requests(user_id, created_at DESC);")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_video_requests_status ON video_requests(status);")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_video_requests_job ON video_requests(job_id);")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_video_requests_token ON video_requests(token);")
         logging.info("PostgreSQL database synced.")
     except Exception as e:
         logging.error(f"PostgreSQL init error: {e}")
@@ -918,190 +885,34 @@ def save_prefs():
         pass
 
 
-def _default_video_cfg() -> dict:
-    return {
+def get_user_show_details(user_id: int) -> bool:
+    return PREFS_CACHE.get(str(user_id), {}).get("show_details", True)
+
+
+def set_user_show_details(user_id: int, show_details: bool):
+    u_key = str(user_id)
+    if u_key not in PREFS_CACHE:
+        PREFS_CACHE[u_key] = {}
+    PREFS_CACHE[u_key]["show_details"] = show_details
+    save_prefs()
+
+
+def get_user_default_cfg(user_id: int) -> dict:
+    base = {
         "mode": "video", "res": "orig", "codec": "h264",
         "crf": "medium", "mute": False, "speed": "1.0", "fmt": "orig"
     }
-
-
-async def migrate_prefs_to_db():
-    """Migrate old JSON preferences to PostgreSQL without overwriting existing DB values."""
-    if not DB_POOL or not PREFS_CACHE:
-        return
-    try:
-        async with DB_POOL.acquire() as conn:
-            for uid_str, prefs in PREFS_CACHE.items():
-                try:
-                    uid = int(uid_str)
-                except (TypeError, ValueError):
-                    continue
-                await conn.execute("""
-                    INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
-                    VALUES ($1, '', '', $2, 0.0, 0, 0.0)
-                    ON CONFLICT (user_id) DO NOTHING;
-                """, uid, get_tehran_date())
-                cfg = prefs.get("default_cfg") if isinstance(prefs, dict) else None
-                show = prefs.get("show_details") if isinstance(prefs, dict) else None
-                if cfg is not None or show is not None:
-                    await conn.execute("""
-                        INSERT INTO user_preferences (user_id, show_details, default_cfg)
-                        VALUES ($1, COALESCE($2, TRUE), COALESCE($3::jsonb, '{}'::jsonb))
-                        ON CONFLICT (user_id) DO UPDATE SET
-                            show_details = CASE WHEN $2 IS NULL THEN user_preferences.show_details ELSE $2 END,
-                            default_cfg = CASE WHEN $3 IS NULL THEN user_preferences.default_cfg ELSE $3::jsonb END,
-                            updated_at = CURRENT_TIMESTAMP;
-                    """, uid, show, json.dumps(cfg, ensure_ascii=False) if cfg is not None else None)
-        logging.info("Old JSON preferences migrated to PostgreSQL.")
-    except Exception as e:
-        logging.error(f"Preference migration error: {e}")
-
-
-async def get_user_show_details(user_id: int) -> bool:
-    if DB_POOL:
-        try:
-            async with DB_POOL.acquire() as conn:
-                row = await conn.fetchrow("SELECT show_details FROM user_preferences WHERE user_id = $1;", user_id)
-                if row is not None:
-                    return bool(row["show_details"])
-        except Exception as e:
-            logging.error(f"Get show_details DB error: {e}")
-    return bool(PREFS_CACHE.get(str(user_id), {}).get("show_details", True))
-
-
-async def set_user_show_details(user_id: int, show_details: bool):
-    u_key = str(user_id)
-    PREFS_CACHE.setdefault(u_key, {})["show_details"] = bool(show_details)
-    save_prefs()
-    if DB_POOL:
-        try:
-            async with DB_POOL.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
-                    VALUES ($1, '', '', $2, 0.0, 0, 0.0)
-                    ON CONFLICT (user_id) DO NOTHING;
-                """, user_id, get_tehran_date())
-                await conn.execute("""
-                    INSERT INTO user_preferences (user_id, show_details)
-                    VALUES ($1, $2)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        show_details = EXCLUDED.show_details,
-                        updated_at = CURRENT_TIMESTAMP;
-                """, user_id, bool(show_details))
-        except Exception as e:
-            logging.error(f"Set show_details DB error: {e}")
-
-
-async def get_user_default_cfg(user_id: int) -> dict:
-    base = _default_video_cfg()
-    if DB_POOL:
-        try:
-            async with DB_POOL.acquire() as conn:
-                row = await conn.fetchrow("SELECT default_cfg FROM user_preferences WHERE user_id = $1;", user_id)
-                if row is not None and row["default_cfg"]:
-                    saved = row["default_cfg"]
-                    if isinstance(saved, str):
-                        saved = json.loads(saved)
-                    if isinstance(saved, dict):
-                        base.update(saved)
-                    return base
-        except Exception as e:
-            logging.error(f"Get default config DB error: {e}")
-    saved = PREFS_CACHE.get(str(user_id), {}).get("default_cfg", {})
-    if isinstance(saved, dict):
-        base.update(saved)
+    user_saved = PREFS_CACHE.get(str(user_id), {}).get("default_cfg", {})
+    base.update(user_saved)
     return base
 
 
-async def set_user_default_cfg(user_id: int, cfg: dict):
-    cfg = dict(cfg or {})
+def set_user_default_cfg(user_id: int, cfg: dict):
     u_key = str(user_id)
-    PREFS_CACHE.setdefault(u_key, {})["default_cfg"] = cfg
+    if u_key not in PREFS_CACHE:
+        PREFS_CACHE[u_key] = {}
+    PREFS_CACHE[u_key]["default_cfg"] = cfg
     save_prefs()
-    if DB_POOL:
-        try:
-            async with DB_POOL.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
-                    VALUES ($1, '', '', $2, 0.0, 0, 0.0)
-                    ON CONFLICT (user_id) DO NOTHING;
-                """, user_id, get_tehran_date())
-                await conn.execute("""
-                    INSERT INTO user_preferences (user_id, default_cfg)
-                    VALUES ($1, $2::jsonb)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        default_cfg = EXCLUDED.default_cfg,
-                        updated_at = CURRENT_TIMESTAMP;
-                """, user_id, json.dumps(cfg, ensure_ascii=False))
-        except Exception as e:
-            logging.error(f"Set default config DB error: {e}")
-
-
-async def create_video_request(
-    user_id: int, *, job_id: str | None = None, token: str | None = None,
-    request_type: str = "video", status: str = "requested", file_id: str | None = None,
-    chat_id: int | None = None, message_id: int | None = None, file_size_mb: float = 0.0,
-    width: int | None = None, height: int | None = None, source_url: str | None = None,
-    service: str | None = None, config: dict | None = None
-) -> int | None:
-    """Persist one user video request. Local runtime dictionaries remain only temporary caches."""
-    if not DB_POOL:
-        return None
-    try:
-        async with DB_POOL.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
-                VALUES ($1, '', '', $2, 0.0, 0, 0.0)
-                ON CONFLICT (user_id) DO NOTHING;
-            """, user_id, get_tehran_date())
-            return await conn.fetchval("""
-                INSERT INTO video_requests (
-                    job_id, token, user_id, request_type, status, file_id, chat_id, message_id,
-                    file_size_mb, width, height, source_url, service, config
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
-                RETURNING id;
-            """, job_id, token, user_id, request_type, status, file_id, chat_id, message_id,
-                float(file_size_mb or 0), width, height, source_url, service,
-                json.dumps(config, ensure_ascii=False) if config is not None else None)
-    except Exception as e:
-        logging.error(f"Create video request DB error: {e}")
-        return None
-
-
-async def update_video_request_status(job_id: str | None = None, token: str | None = None, status: str = "completed"):
-    if not DB_POOL or (not job_id and not token):
-        return
-    try:
-        async with DB_POOL.acquire() as conn:
-            if job_id:
-                await conn.execute("""
-                    UPDATE video_requests SET status=$1, completed_at=CASE WHEN $1 IN ('completed','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END
-                    WHERE job_id=$2;
-                """, status, job_id)
-            else:
-                await conn.execute("""
-                    UPDATE video_requests SET status=$1, completed_at=CASE WHEN $1 IN ('completed','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END
-                    WHERE token=$2;
-                """, status, token)
-    except Exception as e:
-        logging.error(f"Update video request DB error: {e}")
-
-
-async def get_user_video_requests(user_id: int, limit: int = 50) -> list[dict]:
-    if not DB_POOL:
-        return []
-    try:
-        async with DB_POOL.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, job_id, token, request_type, status, file_id, file_size_mb, width, height,
-                       source_url, service, config, created_at, completed_at
-                FROM video_requests WHERE user_id=$1
-                ORDER BY created_at DESC LIMIT $2;
-            """, user_id, max(1, min(limit, 500)))
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logging.error(f"Get video requests DB error: {e}")
-        return []
 
 
 async def custom_save_file(self, path, file_id=None, file_part=0, progress=None, progress_args=()):
@@ -1267,8 +1078,8 @@ def get_main_reply_keyboard(user_id: int):
     return builder.as_markup(resize_keyboard=True)
 
 
-async def get_settings_inline_keyboard(user_id: int):
-    show_details = await get_user_show_details(user_id)
+def get_settings_inline_keyboard(user_id: int):
+    show_details = get_user_show_details(user_id)
     builder = InlineKeyboardBuilder()
     toggle_text = "گزارش مشخصات: کامل ✅" if show_details else "گزارش مشخصات: خلاصه 📉"
     action_text = "تغییر به: خلاصه" if show_details else "تغییر به: کامل"
@@ -1765,10 +1576,6 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     user_name = item["name"]
     username = item["username"]
     await touch_last_video_request(user_id, user_name, username.lstrip("@"), None)
-    await create_video_request(
-        user_id, token=token, request_type="url_download", status="requested",
-        chat_id=chat_id, source_url=url, service=service_name, config={"quality": str(quality)}
-    )
     out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
 
     service_name, service_icon = detect_download_service(url)
@@ -1800,7 +1607,6 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
                 "width": int(cached.get("width") or 1280), "height": int(cached.get("height") or 720),
                 "file_size": int(cached.get("size_bytes") or 0)
             }
-            await update_video_request_status(token=token, status="completed")
             await status_msg.delete()
             return
         except Exception:
@@ -1914,7 +1720,6 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             "height": meta["height"],
             "file_size": fsize
         }
-        await update_video_request_status(token=token, status="completed")
         set_cached_download(url, quality, sent_video.video.file_id, fsize, meta["width"], meta["height"], meta["duration"], title)
 
     except Exception as e:
@@ -1956,7 +1761,7 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     if not saved_req:
         return await callback.message.reply("❌ اطلاعات این ویدیو پریده. لطفاً یه بار دیگه بفرستش.")
 
-    user_default_cfg = await get_user_default_cfg(callback.from_user.id)
+    user_default_cfg = get_user_default_cfg(callback.from_user.id)
     default_cfg = dict(user_default_cfg)
     dl_max_res = saved_req.get("max_res", 720)
 
@@ -2510,7 +2315,7 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, s
         "⚙️ <b>تنظیمات بات</b>\n\n"
         "<blockquote>اینجا می‌تونی مدل نمایش گزارش‌ها و تنظیمات پیش‌فرض تبدیل ویدیوها رو مشخص کنی:</blockquote>"
     )
-    kb = await get_settings_inline_keyboard(user_id)
+    kb = get_settings_inline_keyboard(user_id)
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
         sent = await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -2523,11 +2328,11 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, s
 @dp.callback_query(F.data == "toggle_details", StateFilter("*"))
 async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
-    current_status = await get_user_show_details(user_id)
-    await set_user_show_details(user_id, not current_status)
+    current_status = get_user_show_details(user_id)
+    set_user_show_details(user_id, not current_status)
     await callback.answer("نوع نمایش گزارش عوض شد.", show_alert=False)
     try:
-        await callback.message.edit_reply_markup(reply_markup=await get_settings_inline_keyboard(user_id))
+        await callback.message.edit_reply_markup(reply_markup=get_settings_inline_keyboard(user_id))
     except TelegramBadRequest:
         pass
 
@@ -2535,7 +2340,7 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data == "open_default_settings", StateFilter("*"))
 async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    user_cfg = await get_user_default_cfg(user_id)
+    user_cfg = get_user_default_cfg(user_id)
     text = (
         "🎬 <b>تنظیمات همیشگی پردازش ویدیو</b>\n\n"
         "<blockquote>هرچی اینجا انتخاب کنی، از این به بعد اتوماتیک روی همه ویدیوهات اعمال میشه.</blockquote>\n\n"
@@ -2553,7 +2358,7 @@ async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMCont
 @dp.callback_query(F.data.startswith("defcfg:"), StateFilter("*"))
 async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
     cfg = decode_cfg(callback.data[7:])
-    await set_user_default_cfg(callback.from_user.id, cfg)
+    set_user_default_cfg(callback.from_user.id, cfg)
     await callback.answer("ذخیره شد.", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=build_default_config_keyboard(cfg))
@@ -2571,7 +2376,7 @@ async def back_to_settings_menu(callback: aiotypes.CallbackQuery, state: FSMCont
     await callback.answer()
     await callback.message.edit_text(
         text,
-        reply_markup=await get_settings_inline_keyboard(user_id),
+        reply_markup=get_settings_inline_keyboard(user_id),
         parse_mode="HTML"
     )
     await state.update_data(settings_message_id=callback.message.message_id)
@@ -2825,7 +2630,7 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
     ext = detect_file_extension(message)
 
     if media_category == "video":
-        user_default_cfg = await get_user_default_cfg(u.id)
+        user_default_cfg = get_user_default_cfg(u.id)
         default_cfg = dict(user_default_cfg)
         max_res = 1080
         w = getattr(file_obj, "width", 0) or 0
@@ -3177,14 +2982,6 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "name": user_name
     }
 
-    await create_video_request(
-        user_id, job_id=job_id, request_type="video", status="requested",
-        file_id=file_id, chat_id=callback.message.chat.id, message_id=orig_msg_id,
-        file_size_mb=file_size / (1024 * 1024),
-        width=panel_meta.get("width"), height=panel_meta.get("height"),
-        config=cfg
-    )
-
     token = uuid.uuid4().hex[:8]
     if len(ADMIN_MEDIA_STORE) > 500:
         ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
@@ -3325,7 +3122,6 @@ async def queue_worker():
                 await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
             except Exception:
                 pass
-            await update_video_request_status(job_id=job_id, status="failed")
         finally:
             RUNNING_TASKS.pop(job_id, None)
             ACTIVE_PROCESSES.pop(job_id, None)
@@ -3630,7 +3426,7 @@ async def process_job(job: dict):
         ui_state["percent"] = 0.0
 
         chat_id = job["chat_id"]
-        show_details = await get_user_show_details(user_id)
+        show_details = get_user_show_details(user_id)
 
         if final_size >= initial_size:
             reduction_str = "۰٪"
@@ -3741,8 +3537,6 @@ async def process_job(job: dict):
             file_id=job["file_id"]
         )
 
-        await update_video_request_status(job_id=job_id, status="completed")
-
         if user_id != ADMIN_ID:
             admin_finish_kb = InlineKeyboardBuilder()
             admin_finish_kb.button(text="🎬 دریافت فایل بهینه‌شده", callback_data=f"adm_comp:{token}")
@@ -3806,7 +3600,6 @@ async def main():
     cleanup_download_cache()
     init_prefs_cache()
     await init_db()
-    await migrate_prefs_to_db()
 
     logging.info("Connecting Pyrogram client...")
     try:
