@@ -1257,7 +1257,7 @@ def get_main_reply_keyboard(user_id: int):
     builder = ReplyKeyboardBuilder()
     builder.button(text="⚙️ تنظیمات")
     builder.button(text="📊 حساب و آمار من")
-    builder.button(text="🆕 آپدیت‌های اخیر")
+    builder.button(text="🚀 آپدیت‌های اخیر")
     builder.button(text="📞 پشتیبانی")
     if user_id == ADMIN_ID:
         builder.button(text="👑 پنل ادمین")
@@ -1600,14 +1600,14 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "🆕 آپدیت‌های اخیر", StateFilter("*"))
+@dp.message(F.text == "🚀 آپدیت‌های اخیر", StateFilter("*"))
 async def show_changelog_message(message: aiotypes.Message):
     changelog_text = (
-        f"🚀 <b>آپدیت‌های اخیر بات (نسخه {BOT_VERSION})</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.4.4)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>تبدیل یه کوچولو سریع‌تر شده.</b>\n\n"
-        "🗜 <b>فشرده‌سازی بهتر و کم‌حجم‌تر شده.</b>\n\n"
-        "🎨 <b>منوها و دکمه‌ها جمع‌وجورتر شدن.</b>"
+        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن.\n\n"
+        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
+        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
         "</blockquote>"
     )
     await message.answer(changelog_text, parse_mode="HTML")
@@ -1617,11 +1617,11 @@ async def show_changelog_message(message: aiotypes.Message):
 async def show_changelog_handler(callback: aiotypes.CallbackQuery):
     await callback.answer()
     changelog_text = (
-        f"🚀 <b>آپدیت‌های اخیر بات (نسخه {BOT_VERSION})</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.4.4)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>تبدیل یه کوچولو سریع‌تر شده.</b>\n\n"
-        "🗜 <b>فشرده‌سازی بهتر و کم‌حجم‌تر شده.</b>\n\n"
-        "🎨 <b>منوها و دکمه‌ها جمع‌وجورتر شدن.</b>"
+        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن.\n\n"
+        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
+        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
         "</blockquote>"
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
