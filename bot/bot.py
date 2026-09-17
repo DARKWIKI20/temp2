@@ -13,6 +13,8 @@ import logging
 import datetime
 import traceback
 import subprocess
+import hashlib
+import urllib.parse
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F, types as aiotypes
@@ -41,6 +43,8 @@ MAX_FILE_SIZE = 300 * 1024 * 1024
 DOWNLOAD_DIR = "downloads"
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
+DOWNLOAD_CACHE_FILE = "download_cache.json"
+DOWNLOAD_CACHE_TTL = 24 * 60 * 60
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required.")
@@ -83,6 +87,7 @@ VIDEO_META_CACHE = {}
 DB_POOL = None
 PREFS_CACHE = {}
 LAST_STATS_MESSAGES = {}
+TIP_LAST_SHOWN = {}
 
 JOB_QUEUE = asyncio.PriorityQueue()
 QUEUE_COUNTER = 0
@@ -98,6 +103,7 @@ class AdminMessageState(StatesGroup):
     waiting_for_broadcast_content = State()
     waiting_for_custom_limit = State()
     waiting_for_reset_confirmation = State()
+    waiting_for_user_search = State()
 
 
 def get_tehran_datetime() -> tuple[str, str]:
@@ -224,6 +230,7 @@ async def init_db():
             """)
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_at TIMESTAMP;")
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_file_id TEXT;")
+            await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP;")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     admin_msg_id BIGINT PRIMARY KEY,
@@ -525,7 +532,8 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
             "today_mb": 0.0,
             "max_video": None,
             "last_request_at": None,
-            "last_request_file_id": None
+            "last_request_file_id": None,
+            "last_activity_at": datetime.datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
         }
 
     u = stats["users"][u_key]
@@ -556,17 +564,151 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
     save_backup_stats(stats)
 
 
+
+
+def _cache_key(url: str, quality: str) -> str:
+    normalized = url.strip()
+    return hashlib.sha256(f"{normalized}|{quality}".encode("utf-8")).hexdigest()
+
+
+def load_download_cache() -> dict:
+    if not os.path.exists(DOWNLOAD_CACHE_FILE):
+        return {}
+    try:
+        with open(DOWNLOAD_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_download_cache(cache: dict):
+    try:
+        with open(DOWNLOAD_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.warning(f"Download cache save error: {e}")
+
+
+def cleanup_download_cache():
+    cache = load_download_cache()
+    now = time.time()
+    changed = False
+    for key in list(cache.keys()):
+        ts = float(cache[key].get("cached_at", 0) or 0)
+        if now - ts >= DOWNLOAD_CACHE_TTL:
+            cache.pop(key, None)
+            changed = True
+    if changed:
+        save_download_cache(cache)
+
+
+def get_cached_download(url: str, quality: str) -> dict | None:
+    cleanup_download_cache()
+    item = load_download_cache().get(_cache_key(url, quality))
+    if not item:
+        return None
+    if not item.get("file_id"):
+        return None
+    return item
+
+
+def set_cached_download(url: str, quality: str, file_id: str, size_bytes: int, width: int, height: int, duration: int, title: str = ""):
+    cache = load_download_cache()
+    cache[_cache_key(url, quality)] = {
+        "url": url,
+        "quality": quality,
+        "file_id": file_id,
+        "size_bytes": size_bytes,
+        "width": width,
+        "height": height,
+        "duration": duration,
+        "title": title[:200],
+        "cached_at": time.time()
+    }
+    save_download_cache(cache)
+
+
+async def get_url_preview_info(url: str) -> dict:
+    """اطلاعات اولیه لینک را قبل از دانلود می‌گیرد تا حجم تقریبی مشخص شود."""
+    cmd = [
+        "yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist",
+        "--no-warnings", url
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=25)
+        if proc.returncode != 0:
+            return {}
+        data = json.loads(stdout.decode(errors="ignore"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logging.warning(f"URL preview info error: {e}")
+        return {}
+
+
+def detect_download_service(url: str) -> tuple[str, str]:
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+    except Exception:
+        host = ""
+    if host.startswith("www."):
+        host = host[4:]
+    if "youtube.com" in host or host == "youtu.be":
+        return "YouTube", "▶️"
+    if "instagram.com" in host:
+        return "Instagram", "📸"
+    if "tiktok.com" in host:
+        return "TikTok", "🎵"
+    if host in {"x.com", "twitter.com"} or host.endswith(".x.com"):
+        return "X", "𝕏"
+    if "facebook.com" in host or host == "fb.watch":
+        return "Facebook", "📘"
+    return "سرویس ویدیو", "🌐"
+
+
+TIPS = [
+    "💡 <b>ترفند:</b> برای کاهش حجم بیشتر، H.265 را امتحان کن؛ معمولاً نسبت حجم به کیفیت بهتری می‌دهد.",
+    "💡 <b>ترفند:</b> اگر حجم خیلی مهم است، کیفیت 480p معمولاً برای موبایل کاملاً مناسب است.",
+    "💡 <b>ترفند:</b> ویدیوهای پرنویز و پرتحرک سخت‌تر فشرده می‌شوند و ممکن است حجم نهایی بیشتر بماند.",
+    "💡 <b>ترفند:</b> برای فایل صوتی، بیت‌ریت 64k یا 96k برای استفاده معمولی حجم را خیلی پایین می‌آورد.",
+    "💡 <b>ترفند:</b> اگر فایل از قبل فشرده باشد، کم کردن دوباره حجم ممکن است تفاوت زیادی ایجاد نکند.",
+]
+
+
+def get_random_tip(exclude: str | None = None) -> str:
+    choices = [x for x in TIPS if x != exclude] or TIPS
+    return random.choice(choices)
+
+
+async def maybe_send_random_tip(chat_id: int, user_id: int):
+    last = TIP_LAST_SHOWN.get(user_id, 0)
+    now = time.time()
+    if now - last < 6 * 60 * 60:
+        return
+    if random.random() > 0.25:
+        return
+    tip = get_random_tip()
+    try:
+        await bot.send_message(chat_id=chat_id, text=tip, parse_mode="HTML")
+        TIP_LAST_SHOWN[user_id] = now
+    except Exception:
+        pass
+
 async def register_user(user_id: int, name: str = "", username: str = ""):
     today = get_tehran_date()
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb)
-                    VALUES ($1, $2, $3, $4, 0.0, 0, 0.0)
+                    INSERT INTO user_stats (user_id, name, username, today_date, total_cost, total_jobs, today_mb, last_activity_at)
+                    VALUES ($1, $2, $3, $4, 0.0, 0, 0.0, NOW())
                     ON CONFLICT (user_id) DO UPDATE SET
                         name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
-                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END;
+                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END,
+                        last_activity_at = NOW();
                 """, user_id, name, username, today)
         except Exception:
             pass
@@ -587,6 +729,13 @@ async def register_user(user_id: int, name: str = "", username: str = ""):
             "last_request_at": None,
             "last_request_file_id": None
         }
+        save_backup_stats(stats)
+    else:
+        stats["users"][u_key]["last_activity_at"] = datetime.datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        if name:
+            stats["users"][u_key]["name"] = name
+        if username:
+            stats["users"][u_key]["username"] = username
         save_backup_stats(stats)
 
 
@@ -937,11 +1086,72 @@ def get_settings_inline_keyboard(user_id: int):
     builder.button(text=toggle_text, callback_data="none")
     builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
     builder.button(text="🎬 تنظیمات پیش‌فرض ویدیو", callback_data="open_default_settings")
-    builder.button(text="💡 راهنمای کم‌حجم کردن", callback_data="open_compression_guide")
+    builder.button(text="💡 ترفندها", callback_data="open_tips")
     builder.button(text="🔴 پشیمون شدم", callback_data="close_settings")
     builder.adjust(1)
     return builder.as_markup()
 
+
+
+async def get_active_users_summary() -> dict:
+    now = datetime.datetime.now(TEHRAN_TZ).replace(tzinfo=None)
+    periods = {"امروز": now - datetime.timedelta(days=1), "هفته": now - datetime.timedelta(days=7), "ماه": now - datetime.timedelta(days=30)}
+    result = {k: 0 for k in periods}
+    users = []
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE last_activity_at >= $1) AS day_count,
+                        COUNT(*) FILTER (WHERE last_activity_at >= $2) AS week_count,
+                        COUNT(*) FILTER (WHERE last_activity_at >= $3) AS month_count
+                    FROM user_stats;
+                """, periods["امروز"], periods["هفته"], periods["ماه"])
+                result = {"امروز": int(row["day_count"] or 0), "هفته": int(row["week_count"] or 0), "ماه": int(row["month_count"] or 0)}
+                rows = await conn.fetch("""
+                    SELECT user_id, COALESCE(name,'کاربر') AS name, COALESCE(username,'') AS username, last_activity_at
+                    FROM user_stats
+                    ORDER BY last_activity_at DESC NULLS LAST, user_id DESC
+                    LIMIT 30;
+                """)
+                users = [dict(r) for r in rows]
+                return {"counts": result, "users": users}
+        except Exception as e:
+            logging.error(f"Active users DB error: {e}")
+    stats = load_backup_stats().get("users", {})
+    for uid, data in stats.items():
+        raw = data.get("last_activity_at")
+        if not raw:
+            continue
+        try:
+            dt = datetime.datetime.fromisoformat(str(raw))
+        except Exception:
+            continue
+        if dt >= periods["امروز"]: result["امروز"] += 1
+        if dt >= periods["هفته"]: result["هفته"] += 1
+        if dt >= periods["ماه"]: result["ماه"] += 1
+        users.append({"user_id": int(uid), "name": data.get("name") or "کاربر", "username": data.get("username") or "", "last_activity_at": raw})
+    users.sort(key=lambda x: (x.get("last_activity_at") or "", int(x["user_id"])), reverse=True)
+    return {"counts": result, "users": users[:30]}
+
+
+def format_active_users_text(data: dict) -> str:
+    counts = data["counts"]
+    lines = [
+        "👥 <b>کاربران فعال</b>",
+        f"<blockquote>🟢 امروز: <b>{counts['امروز']}</b> نفر\n📅 ۷ روز اخیر: <b>{counts['هفته']}</b> نفر\n🗓 ۳۰ روز اخیر: <b>{counts['ماه']}</b> نفر</blockquote>",
+        "",
+        "🕒 <b>آخرین فعالیت کاربران:</b>"
+    ]
+    for i, u in enumerate(data["users"][:20], 1):
+        name = html.escape((u.get("name") or "کاربر")[:22])
+        uname = html.escape(u.get("username") or "ندارد")
+        last = u.get("last_activity_at")
+        if hasattr(last, "strftime"):
+            last = last.strftime("%Y-%m-%d %H:%M")
+        lines.append(f"{i}. {name} | {uname} | <code>{u['user_id']}</code>\n   └ {html.escape(str(last or 'نامشخص'))}")
+    return "\n".join(lines)
 
 def get_admin_panel_keyboard():
     builder = InlineKeyboardBuilder()
@@ -949,6 +1159,8 @@ def get_admin_panel_keyboard():
     builder.button(text="⏱ سقف سهمیه روزانه", callback_data="admin_set_limit")
     builder.button(text="📢 ارسال پیام همگانی", callback_data="admin_broadcast")
     builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
+    builder.button(text="🔎 جستجوی کاربر", callback_data="admin_user_search")
+    builder.button(text="👥 کاربران فعال", callback_data="admin_active_users")
     builder.button(text="🔴 بستن پنل", callback_data="admin_close")
     builder.adjust(1)
     return builder.as_markup()
@@ -1276,6 +1488,27 @@ async def send_compression_guide(callback: aiotypes.CallbackQuery):
     await callback.message.answer(guide_text, parse_mode="HTML")
 
 
+
+@dp.callback_query(F.data == "open_tips", StateFilter("*"))
+async def show_tips_handler(callback: aiotypes.CallbackQuery):
+    await callback.answer()
+    tip = get_random_tip()
+    b = InlineKeyboardBuilder()
+    b.button(text="🔄 یه ترفند دیگه", callback_data="open_tips")
+    b.button(text="🔴 بستن", callback_data="close_tip")
+    b.adjust(1)
+    await callback.message.answer(tip, reply_markup=b.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "close_tip", StateFilter("*"))
+async def close_tip_handler(callback: aiotypes.CallbackQuery):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+
 URL_REGEX = re.compile(r'(https?://[^\s]+)')
 
 @dp.message(F.text.regexp(URL_REGEX), StateFilter("*"))
@@ -1301,6 +1534,7 @@ async def handle_url_message(message: aiotypes.Message, state: FSMContext):
         "chat_id": message.chat.id
     }
 
+    service_name, service_icon = detect_download_service(url)
     builder = InlineKeyboardBuilder()
     builder.button(text="🎬 کیفیت 720p", callback_data=f"ytdl:{token}:720")
     builder.button(text="📱 کیفیت 480p", callback_data=f"ytdl:{token}:480")
@@ -1308,8 +1542,8 @@ async def handle_url_message(message: aiotypes.Message, state: FSMContext):
     builder.adjust(2, 1)
 
     await message.reply(
-        "🔗 <b>لینک ویدیو پیدا شد</b>\n"
-        "<blockquote>از یوتیوب، اینستاگرام، تیک‌تاک و بقیه سایتا می‌تونی ویدیو بگیری.</blockquote>\n\n"
+        f"{service_icon} <b>سرویس تشخیص داده شد: {html.escape(service_name)}</b>\n"
+        "<blockquote>قبل از دانلود، اطلاعات و حجم تقریبی ویدیو بررسی میشه تا انتخاب کیفیت راحت‌تر باشه.</blockquote>\n\n"
         "چه کیفیتی برات دانلود کنم؟",
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
@@ -1344,8 +1578,72 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     await touch_last_video_request(user_id, user_name, username.lstrip("@"), None)
     out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
 
+    service_name, service_icon = detect_download_service(url)
+    cached = get_cached_download(url, quality)
+    if cached:
+        try:
+            status_msg = await callback.message.edit_text(
+                f"⚡️ <b>این لینک قبلاً دانلود شده بود.</b>\n📦 از کش ۲۴ ساعته استفاده می‌کنم؛ دانلود دوباره لازم نیست.",
+                parse_mode="HTML"
+            )
+            sent_video = await bot.send_video(
+                chat_id=chat_id,
+                video=cached["file_id"],
+                duration=int(cached.get("duration") or 0),
+                width=int(cached.get("width") or 1280),
+                height=int(cached.get("height") or 720),
+                caption=(
+                    f"{service_icon} <b>ویدیو از کش ارسال شد</b>\n\n"
+                    f"<blockquote>📦 حجم: <b>{float(cached.get('size_bytes', 0))/(1024*1024):.2f} مگابایت</b>\n"
+                    f"⏳ کش تا ۲۴ ساعت نگه داشته میشه.</blockquote>"
+                ),
+                reply_markup=PyroInlineKeyboardMarkup([[PyroInlineKeyboardButton(
+                    "🗜 همین رو کم‌حجم کن", callback_data=f"compress_from_dl:{token}"
+                )]])
+            )
+            USER_REQUESTS[f"dl_msg_{token}"] = {
+                "file_id": sent_video.video.file_id, "user_id": user_id, "name": user_name,
+                "chat_id": chat_id, "message_id": sent_video.id, "max_res": int(quality),
+                "width": int(cached.get("width") or 1280), "height": int(cached.get("height") or 720),
+                "file_size": int(cached.get("size_bytes") or 0)
+            }
+            await status_msg.delete()
+            return
+        except Exception:
+            pass
+
     status_msg = await callback.message.edit_text(
-        f"⏳ <b>دارم از سرور دانلودش می‌کنم ({quality}p)...</b>\nیه کوچولو دندون رو جگر بذار.",
+        f"{service_icon} <b>{html.escape(service_name)}</b>\n⏳ دارم اطلاعات و حجم تقریبی ویدیو رو بررسی می‌کنم...",
+        parse_mode="HTML"
+    )
+
+    preview = await get_url_preview_info(url)
+    estimated_size = int(preview.get("filesize") or preview.get("filesize_approx") or 0)
+    title = preview.get("title") or ""
+    preview_height = int(preview.get("height") or 0)
+    if estimated_size > MAX_FILE_SIZE:
+        lower_kb = None
+        if str(quality) != "480":
+            lower_kb = InlineKeyboardBuilder()
+            lower_kb.button(text="📱 انتخاب 480p", callback_data=f"ytdl:{token}:480")
+            lower_kb = lower_kb.as_markup()
+        await status_msg.edit_text(
+            f"⚠️ <b>این کیفیت برای دانلود خیلی حجیمه.</b>\n\n"
+            f"<blockquote>🎬 سرویس: <b>{html.escape(service_name)}</b>\n"
+            f"📦 حجم تقریبی: <b>{estimated_size/(1024*1024):.0f} مگابایت</b>\n"
+            f"🎯 کیفیت انتخابی: <b>{quality}p</b></blockquote>\n\n"
+            f"برای پردازش باید کیفیت پایین‌تر انتخاب کنی.",
+            reply_markup=lower_kb,
+            parse_mode="HTML"
+        )
+        return
+
+    await status_msg.edit_text(
+        f"{service_icon} <b>{html.escape(service_name)}</b>\n"
+        f"🎬 <b>{html.escape(title[:90]) if title else 'ویدیو'}</b>\n"
+        f"📦 حجم تقریبی: <b>{estimated_size/(1024*1024):.1f} مگابایت</b>\n"
+        f"🎯 کیفیت: <b>{quality}p</b>\n\n"
+        f"⏳ حالا دارم دانلودش می‌کنم...",
         parse_mode="HTML"
     )
 
@@ -1422,6 +1720,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             "height": meta["height"],
             "file_size": fsize
         }
+        set_cached_download(url, quality, sent_video.video.file_id, fsize, meta["width"], meta["height"], meta["duration"], title)
 
     except Exception as e:
         tb = traceback.format_exc()
@@ -1777,6 +2076,73 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
         f"📊 کل مخاطب‌ها: <b>{len(users)} نفر</b></blockquote>",
         parse_mode="HTML"
     )
+
+
+
+@dp.callback_query(F.data == "admin_active_users", StateFilter("*"))
+async def show_active_users_admin(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    data = await get_active_users_summary()
+    b = InlineKeyboardBuilder()
+    b.button(text="🔄 بروزرسانی", callback_data="admin_active_users")
+    b.button(text="🔴 برگشت به پنل", callback_data="admin_back_main")
+    b.adjust(1)
+    await callback.message.edit_text(format_active_users_text(data), reply_markup=b.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "admin_user_search", StateFilter("*"))
+async def admin_user_search_prompt(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    b = InlineKeyboardBuilder()
+    b.button(text="🔴 لغو", callback_data="cancel_admin_action")
+    await callback.message.edit_text(
+        "🔎 <b>جستجوی کاربر</b>\\n\\nنام، یوزرنیم یا آیدی عددی کاربر رو بفرست:",
+        reply_markup=b.as_markup(), parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_user_search)
+
+
+@dp.message(AdminMessageState.waiting_for_user_search, F.chat.id == ADMIN_ID)
+async def process_admin_user_search(message: aiotypes.Message, state: FSMContext):
+    q = (message.text or "").strip().lower().lstrip("@")
+    if not q:
+        return await message.answer("عبارت جستجو رو بفرست:")
+    matches = []
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT user_id, COALESCE(name,'کاربر') AS name, COALESCE(username,'') AS username, last_activity_at
+                    FROM user_stats
+                    WHERE CAST(user_id AS TEXT) ILIKE $1 OR name ILIKE $1 OR username ILIKE $1
+                    ORDER BY last_activity_at DESC NULLS LAST LIMIT 30;
+                """, f"%{q}%")
+                matches = [dict(r) for r in rows]
+        except Exception as e:
+            logging.error(f"User search DB error: {e}")
+    else:
+        for uid, data in load_backup_stats().get("users", {}).items():
+            if q in str(uid).lower() or q in str(data.get("name", "")).lower() or q in str(data.get("username", "")).lower().lstrip("@"):
+                matches.append({"user_id": int(uid), "name": data.get("name") or "کاربر", "username": data.get("username") or "", "last_activity_at": data.get("last_activity_at")})
+        matches.sort(key=lambda x: (x.get("last_activity_at") or "", int(x["user_id"])), reverse=True)
+        matches = matches[:30]
+    await state.clear()
+    if not matches:
+        return await message.answer("❌ کاربری با این مشخصات پیدا نشد.")
+    b = InlineKeyboardBuilder()
+    lines = ["🔎 <b>نتیجه جستجو</b>", ""]
+    for u in matches:
+        name = html.escape((u.get("name") or "کاربر")[:24])
+        uname = html.escape(u.get("username") or "ندارد")
+        lines.append(f"👤 {name} | {uname} | <code>{u['user_id']}</code>")
+        b.button(text=f"✉️ {name[:18]} | {u['user_id']}", callback_data=f"admin_pick_user:{u['user_id']}")
+    b.button(text="🔴 برگشت به پنل", callback_data="admin_back_main")
+    b.adjust(1)
+    await message.answer("\n".join(lines), reply_markup=b.as_markup(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "admin_send_single", StateFilter("*"))
@@ -2240,8 +2606,11 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
 
     file_size_bytes = file_obj.file_size or 0
     if file_size_bytes > MAX_FILE_SIZE and u.id != ADMIN_ID:
+        size_mb = file_size_bytes / (1024 * 1024)
         return await message.reply(
-            SIZE_LIMIT_EXCEEDED_MSG,
+            f"⚠️ <b>حجم این فایل {size_mb:.0f} مگابایته.</b>\n\n"
+            f"<blockquote>حداکثر حجم قابل پردازش فعلی: <b>{MAX_FILE_SIZE/(1024*1024):.0f} مگابایت</b></blockquote>\n\n"
+            "برای پردازش باید فایل سبک‌تر یا کیفیت پایین‌تر بفرستی.",
             parse_mode="HTML"
         )
 
@@ -3202,6 +3571,8 @@ async def process_job(job: dict):
             except Exception as adm_e:
                 logging.error(f"Finish log error: {adm_e}")
 
+        await maybe_send_random_tip(chat_id, user_id)
+
     finally:
         ui_state["done"] = True
         if not ui_task.done():
@@ -3214,8 +3585,19 @@ async def process_job(job: dict):
                     pass
 
 
+
+
+async def download_cache_cleanup_worker():
+    while True:
+        try:
+            cleanup_download_cache()
+        except Exception:
+            pass
+        await asyncio.sleep(60 * 60)
+
 async def main():
     clean_residual_downloads()
+    cleanup_download_cache()
     init_prefs_cache()
     await init_db()
 
@@ -3228,6 +3610,7 @@ async def main():
 
     asyncio.create_task(queue_worker())
     asyncio.create_task(midnight_reset_worker())
+    asyncio.create_task(download_cache_cleanup_worker())
     logging.info(f"Bot v{BOT_VERSION} is now online.")
 
     try:
