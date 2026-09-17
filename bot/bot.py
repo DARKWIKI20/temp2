@@ -17,7 +17,7 @@ import subprocess
 import asyncpg
 from aiogram import Bot, Dispatcher, F, types as aiotypes
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.2"
+BOT_VERSION = "2.4.3"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
@@ -55,14 +55,13 @@ session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
-# غیرفعال‌سازی دریافت آپدیت در پایروگرام برای جلوگیری از قطع ارتباط getUpdates در آیگرام
+# کلاینت رسمی و اصلاح‌شده پایروگرام بدون پارامترهای نامعتبر
 pyro = PyroClient(
     name="bot_engine",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    ipv6=False,
-    no_updates=True
+    ipv6=False
 )
 
 SUPPORT_MAP = {}
@@ -339,7 +338,7 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
                             ELSE user_stats.max_vid_file_id
                         END,
                         max_vid_cost = CASE 
-                            WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.max_vid_file_id
+                            WHEN EXCLUDED.total_cost >= COALESCE(user_stats.max_vid_cost, 0.0) THEN EXCLUDED.total_cost
                             ELSE user_stats.max_vid_cost
                         END,
                         max_vid_size_mb = CASE 
@@ -682,7 +681,6 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
 pyro.save_file = types.MethodType(custom_save_file, pyro)
 
 
-# اجرای مهارشده FFmpeg با حداقل درگیری حافظه و ثبت زنده پیشرفت
 async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: float, job_id: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -967,7 +965,8 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
         pass
 
 
-@dp.message(CommandStart())
+# هندلر استارت مجهز به فیلتر جامع وضعیت برای شکستن هر وضعیت گیرکرده
+@dp.message(CommandStart(), StateFilter("*"))
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     await state.clear()
     u = message.from_user
@@ -994,9 +993,10 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     await message.answer("📌 منوی دسترسی سریع:", reply_markup=builder.as_markup())
 
 
-@dp.message(F.text == "📊 حساب و آمار من")
-@dp.callback_query(F.data == "show_my_stats")
-async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQuery):
+@dp.message(F.text == "📊 حساب و آمار من", StateFilter("*"))
+@dp.callback_query(F.data == "show_my_stats", StateFilter("*"))
+async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
+    await state.clear()
     user_id = event.from_user.id
     u_stat = await get_user_stat(user_id)
     limit = await get_daily_limit_mb()
@@ -1029,7 +1029,7 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
         await event.answer(text, parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "open_compression_guide")
+@dp.callback_query(F.data == "open_compression_guide", StateFilter("*"))
 async def send_compression_guide(callback: aiotypes.CallbackQuery):
     await callback.answer()
     guide_text = (
@@ -1045,8 +1045,9 @@ async def send_compression_guide(callback: aiotypes.CallbackQuery):
 
 URL_REGEX = re.compile(r'(https?://[^\s]+)')
 
-@dp.message(F.text.regexp(URL_REGEX))
-async def handle_url_message(message: aiotypes.Message):
+@dp.message(F.text.regexp(URL_REGEX), StateFilter("*"))
+async def handle_url_message(message: aiotypes.Message, state: FSMContext):
+    await state.clear()
     u = message.from_user
     await register_user(u.id, u.full_name or "", u.username or "")
 
@@ -1082,7 +1083,7 @@ async def handle_url_message(message: aiotypes.Message):
     )
 
 
-@dp.callback_query(F.data.startswith("ytdl_cancel:"))
+@dp.callback_query(F.data.startswith("ytdl_cancel:"), StateFilter("*"))
 async def cancel_url_dl(callback: aiotypes.CallbackQuery):
     token = callback.data.split(":")[1]
     URL_DOWNLOADS.pop(token, None)
@@ -1090,7 +1091,7 @@ async def cancel_url_dl(callback: aiotypes.CallbackQuery):
     await callback.message.edit_text("عملیات لغو شد.")
 
 
-@dp.callback_query(F.data.startswith("ytdl:"))
+@dp.callback_query(F.data.startswith("ytdl:"), StateFilter("*"))
 async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     await callback.answer()
     _, token, quality = callback.data.split(":")
@@ -1214,7 +1215,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
                     pass
 
 
-@dp.callback_query(F.data.startswith("compress_from_dl:"))
+@dp.callback_query(F.data.startswith("compress_from_dl:"), StateFilter("*"))
 async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     await callback.answer()
     token = callback.data.split(":")[1]
@@ -1254,8 +1255,8 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
 
 
 # --- پنل مدیریت ادمین ---
-@dp.message(Command("admin"))
-@dp.message(F.text == "👑 پنل مدیریت")
+@dp.message(Command("admin"), StateFilter("*"))
+@dp.message(F.text == "👑 پنل مدیریت", StateFilter("*"))
 async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
@@ -1273,7 +1274,7 @@ async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data == "admin_close")
+@dp.callback_query(F.data == "admin_close", StateFilter("*"))
 async def close_admin_panel(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1282,7 +1283,7 @@ async def close_admin_panel(callback: aiotypes.CallbackQuery, state: FSMContext)
     await callback.message.delete()
 
 
-@dp.callback_query(F.data == "admin_top_users")
+@dp.callback_query(F.data == "admin_top_users", StateFilter("*"))
 async def show_top_users(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1309,7 +1310,7 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
     await callback.message.answer("\n".join(text_lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("adm_u_stat:"))
+@dp.callback_query(F.data.startswith("adm_u_stat:"), StateFilter("*"))
 async def show_single_user_stat(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1354,7 +1355,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("adm_get_vid:"))
+@dp.callback_query(F.data.startswith("adm_get_vid:"), StateFilter("*"))
 async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1381,7 +1382,7 @@ async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"خطا در ارسال فایل:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "admin_set_limit")
+@dp.callback_query(F.data == "admin_set_limit", StateFilter("*"))
 async def show_limit_settings(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1409,7 +1410,7 @@ async def show_limit_settings(callback: aiotypes.CallbackQuery):
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("set_lim:"))
+@dp.callback_query(F.data.startswith("set_lim:"), StateFilter("*"))
 async def apply_preset_limit(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1420,7 +1421,7 @@ async def apply_preset_limit(callback: aiotypes.CallbackQuery):
     await show_limit_settings(callback)
 
 
-@dp.callback_query(F.data == "admin_reset_quota_prompt")
+@dp.callback_query(F.data == "admin_reset_quota_prompt", StateFilter("*"))
 async def prompt_reset_quota(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1450,7 +1451,7 @@ async def process_reset_quota_confirmation(message: aiotypes.Message, state: FSM
         await message.answer("❌ عبارت تأیید ارسال نشد. عملیات لغو شد.", parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "set_lim_custom")
+@dp.callback_query(F.data == "set_lim_custom", StateFilter("*"))
 async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1479,10 +1480,11 @@ async def process_custom_limit_input(message: aiotypes.Message, state: FSMContex
     await message.answer(f"✅ سقف مصرف روزانه روی <b>{val_str}</b> تنظیم شد.", parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "admin_back_main")
+@dp.callback_query(F.data == "admin_back_main", StateFilter("*"))
 async def back_to_admin_main(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
+    await state.clear()
     await callback.answer()
     all_users = await get_all_user_ids()
     limit = await get_daily_limit_mb()
@@ -1497,7 +1499,7 @@ async def back_to_admin_main(callback: aiotypes.CallbackQuery, state: FSMContext
     )
 
 
-@dp.callback_query(F.data == "admin_broadcast")
+@dp.callback_query(F.data == "admin_broadcast", StateFilter("*"))
 async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1540,7 +1542,7 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data == "admin_send_single")
+@dp.callback_query(F.data == "admin_send_single", StateFilter("*"))
 async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1556,7 +1558,7 @@ async def ask_user_id_for_single(callback: aiotypes.CallbackQuery, state: FSMCon
     await state.set_state(AdminMessageState.waiting_for_user_id)
 
 
-@dp.callback_query(F.data.startswith("reply_to_user:"))
+@dp.callback_query(F.data.startswith("reply_to_user:"), StateFilter("*"))
 async def quick_reply_to_user(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1626,7 +1628,7 @@ async def send_single_message_to_user(message: aiotypes.Message, state: FSMConte
     await state.clear()
 
 
-@dp.callback_query(F.data == "cancel_admin_action")
+@dp.callback_query(F.data == "cancel_admin_action", StateFilter("*"))
 async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -1635,9 +1637,10 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     await callback.message.edit_text("عملیات لغو شد.")
 
 
-@dp.message(F.text == "⚙️ تنظیمات")
-@dp.callback_query(F.data == "open_settings")
-async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
+@dp.message(F.text == "⚙️ تنظیمات", StateFilter("*"))
+@dp.callback_query(F.data == "open_settings", StateFilter("*"))
+async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
+    await state.clear()
     user_id = event.from_user.id
     u = event.from_user
     await register_user(user_id, u.full_name or "", u.username or "")
@@ -1654,7 +1657,7 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery):
         await event.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "toggle_details")
+@dp.callback_query(F.data == "toggle_details", StateFilter("*"))
 async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     current_status = get_user_show_details(user_id)
@@ -1666,7 +1669,7 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
         pass
 
 
-@dp.callback_query(F.data == "open_default_settings")
+@dp.callback_query(F.data == "open_default_settings", StateFilter("*"))
 async def show_default_settings(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     user_cfg = get_user_default_cfg(user_id)
@@ -1683,7 +1686,7 @@ async def show_default_settings(callback: aiotypes.CallbackQuery):
     )
 
 
-@dp.callback_query(F.data.startswith("defcfg:"))
+@dp.callback_query(F.data.startswith("defcfg:"), StateFilter("*"))
 async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
     cfg = decode_cfg(callback.data[7:])
     set_user_default_cfg(callback.from_user.id, cfg)
@@ -1694,7 +1697,7 @@ async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
         pass
 
 
-@dp.callback_query(F.data == "back_to_settings")
+@dp.callback_query(F.data == "back_to_settings", StateFilter("*"))
 async def back_to_settings_menu(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     text = (
@@ -1709,19 +1712,19 @@ async def back_to_settings_menu(callback: aiotypes.CallbackQuery):
     )
 
 
-@dp.callback_query(F.data == "close_settings")
+@dp.callback_query(F.data == "close_settings", StateFilter("*"))
 async def close_settings_menu(callback: aiotypes.CallbackQuery):
     await callback.answer()
     await callback.message.delete()
 
 
-@dp.callback_query(F.data == "none")
+@dp.callback_query(F.data == "none", StateFilter("*"))
 async def no_action_callback(callback: aiotypes.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(F.text == "📞 پشتیبانی")
-@dp.callback_query(F.data == "start_support")
+@dp.message(F.text == "📞 پشتیبانی", StateFilter("*"))
+@dp.callback_query(F.data == "start_support", StateFilter("*"))
 async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
     u = event.from_user
     await register_user(u.id, u.full_name or "", u.username or "")
@@ -1739,7 +1742,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
     await state.set_state(SupportState.waiting_for_message)
 
 
-@dp.callback_query(F.data == "cancel_support")
+@dp.callback_query(F.data == "cancel_support", StateFilter("*"))
 async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("لغو شد.")
@@ -1790,7 +1793,7 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
     await state.clear()
 
 
-@dp.message(F.chat.id == ADMIN_ID, F.reply_to_message)
+@dp.message(F.chat.id == ADMIN_ID, F.reply_to_message, StateFilter("*"))
 async def handle_admin_reply(message: aiotypes.Message):
     replied = message.reply_to_message
     target_user_id = SUPPORT_MAP.get(replied.message_id)
@@ -1827,7 +1830,7 @@ async def handle_admin_reply(message: aiotypes.Message):
         await message.reply(f"⚠️ خطا در ارسال:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("err_send_vid:"))
+@dp.callback_query(F.data.startswith("err_send_vid:"), StateFilter("*"))
 async def handle_send_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     failed_job = FAILED_JOBS.pop(job_id, None)
@@ -1854,7 +1857,7 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
         await callback.message.edit_text("⚠️ خطا در ارسال فایل.")
 
 
-@dp.callback_query(F.data.startswith("err_cancel_vid:"))
+@dp.callback_query(F.data.startswith("err_cancel_vid:"), StateFilter("*"))
 async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
@@ -1862,7 +1865,7 @@ async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     await callback.message.edit_text("عملیات لغو شد.")
 
 
-@dp.message(F.photo)
+@dp.message(F.photo, StateFilter("*"))
 async def handle_uncompressed_photo_notice(message: aiotypes.Message):
     await message.reply("⚠️ پردازش تصویر پشتیبانی نمی‌شود. لطفاً فایل ویدیویی یا صوتی ارسال کنید.")
 
@@ -1887,8 +1890,10 @@ def detect_file_extension(message: aiotypes.Message | None) -> str:
     return "mp4"
 
 
-@dp.message(F.video | F.document | F.audio | F.voice)
-async def handle_incoming_media(message: aiotypes.Message):
+# دریافت فایل‌های ارسالی با فیلتر باز برای پاکسازی هرگونه وضعیت معلق
+@dp.message(F.video | F.document | F.audio | F.voice, StateFilter("*"))
+async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
+    await state.clear()
     u = message.from_user
     await register_user(u.id, u.full_name or "", u.username or "")
 
@@ -2002,13 +2007,13 @@ async def handle_incoming_media(message: aiotypes.Message):
         VIDEO_META_CACHE[sent_panel.message_id] = {
             "orig_ext": ext,
             "media_type": "audio",
-            "file_size": file_size_bytes,
+            "file_size": file_size_mb * 1024 * 1024,
             "file_id": file_obj.file_id,
             "orig_msg_id": message.message_id
         }
 
 
-@dp.callback_query(F.data.startswith("adm_orig:"))
+@dp.callback_query(F.data.startswith("adm_orig:"), StateFilter("*"))
 async def admin_fetch_orig_media(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -2027,7 +2032,7 @@ async def admin_fetch_orig_media(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"⚠️ ارسال فایل اصلی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("adm_comp:"))
+@dp.callback_query(F.data.startswith("adm_comp:"), StateFilter("*"))
 async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
@@ -2050,7 +2055,8 @@ async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"⚠️ ارسال فایل خروجی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("acfg:"))
+# کالبک‌های تغییر تنظیمات صوتی با فیلتر وضعیت آزاد
+@dp.callback_query(F.data.startswith("acfg:"), StateFilter("*"))
 async def update_audio_settings(callback: aiotypes.CallbackQuery):
     try:
         await callback.answer()
@@ -2063,7 +2069,8 @@ async def update_audio_settings(callback: aiotypes.CallbackQuery):
         pass
 
 
-@dp.callback_query(F.data.startswith("cfg:"))
+# کالبک‌های تغییر تنظیمات ویدیو با فیلتر وضعیت آزاد
+@dp.callback_query(F.data.startswith("cfg:"), StateFilter("*"))
 async def update_settings(callback: aiotypes.CallbackQuery):
     try:
         await callback.answer()
@@ -2079,7 +2086,7 @@ async def update_settings(callback: aiotypes.CallbackQuery):
         pass
 
 
-@dp.callback_query(F.data == "cancel_panel")
+@dp.callback_query(F.data == "cancel_panel", StateFilter("*"))
 async def cancel_panel(callback: aiotypes.CallbackQuery):
     try:
         await callback.answer()
@@ -2091,7 +2098,7 @@ async def cancel_panel(callback: aiotypes.CallbackQuery):
         pass
 
 
-@dp.callback_query(F.data.startswith("stop:"))
+@dp.callback_query(F.data.startswith("stop:"), StateFilter("*"))
 async def stop_processing(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":")[1]
     
@@ -2114,7 +2121,7 @@ async def stop_processing(callback: aiotypes.CallbackQuery):
         await callback.answer("پردازشی در حال اجرا نیست.", show_alert=True)
 
 
-@dp.callback_query(F.data.startswith("arun:"))
+@dp.callback_query(F.data.startswith("arun:"), StateFilter("*"))
 async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     global QUEUE_COUNTER
     try:
@@ -2193,7 +2200,7 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     }))
 
 
-@dp.callback_query(F.data.startswith("quick_audio:"))
+@dp.callback_query(F.data.startswith("quick_audio:"), StateFilter("*"))
 async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     await callback.answer("در حال آماده‌سازی...")
     job_id = callback.data.split(":", 1)[1]
@@ -2254,7 +2261,8 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     }))
 
 
-@dp.callback_query(F.data.startswith("run:"))
+# کلید شروع پردازش با فیلتر وضعیت آزاد
+@dp.callback_query(F.data.startswith("run:"), StateFilter("*"))
 async def enqueue_task(callback: aiotypes.CallbackQuery):
     global QUEUE_COUNTER
     try:
@@ -2346,6 +2354,546 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
         "status_msg": status_msg,
         "token": token
     }))
+
+
+async def queue_worker():
+    while True:
+        priority, count, job = await JOB_QUEUE.get()
+        job_id = job["job_id"]
+
+        if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
+            ACTIVE_PROCESSES.pop(job_id, None)
+            JOB_QUEUE.task_done()
+            continue
+
+        task = asyncio.create_task(process_job(job))
+        RUNNING_TASKS[job_id] = task
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            logging.info(f"Task {job_id} cancelled.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Job {job_id} error:\n{tb}")
+
+            tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
+            clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
+
+            u = job.get("user")
+            user_id = job.get("user_id") or (u.id if u else job["chat_id"])
+            user_name = u.full_name if u else "نامشخص"
+            username = f"@{u.username}" if (u and u.username) else "ندارد"
+
+            admin_err_alert = (
+                f"🚨 <b>گزارش خطای خودکار پردازش</b>\n\n"
+                f"<blockquote>👤 کاربر: {html.escape(user_name)} (<code>{user_id}</code>)\n"
+                f"🔗 نام کاربری: {html.escape(username)}\n"
+                f"❌ شرح خطا: <code>{html.escape(str(e)[:250])}</code></blockquote>\n\n"
+                f"📋 لاگ فنی:\n<pre>{html.escape(clean_tb[:800])}</pre>"
+            )
+
+            admin_err_kb = InlineKeyboardBuilder()
+            token = job.get("token")
+            if token and token in ADMIN_MEDIA_STORE:
+                admin_err_kb.button(text="📹 دریافت ویدیو", callback_data=f"adm_orig:{token}")
+
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=admin_err_alert,
+                    reply_markup=admin_err_kb.as_markup() if token else None,
+                    parse_mode="HTML"
+                )
+            except Exception as adm_err:
+                logging.error(f"Alert admin error: {adm_err}")
+
+            if len(FAILED_JOBS) > 100:
+                FAILED_JOBS.pop(next(iter(FAILED_JOBS)))
+
+            FAILED_JOBS[job_id] = {
+                "chat_id": job["chat_id"],
+                "msg_id": job["msg_id"],
+                "user_name": user_name,
+                "user_id": user_id
+            }
+
+            err_kb = InlineKeyboardBuilder()
+            err_kb.button(text="🟢 بله، فایل اصلی بررسی شود", callback_data=f"err_send_vid:{job_id}")
+            err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
+            err_kb.adjust(1)
+
+            user_notice = (
+                "⚠️ متأسفانه در فرآیند تبدیل و فشرده‌سازی این فایل مشکلی پیش آمد.\n\n"
+                "<blockquote>📌 ممکن است فایل ارسالی آسیب دیده باشد یا استاندارد نباشد.\n"
+                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b></blockquote>\n\n"
+                "❓ مایلید فایل اصلی جهت بررسی فنی برای پشتیبانی ارسال شود؟"
+            )
+            try:
+                await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
+            except Exception:
+                pass
+        finally:
+            RUNNING_TASKS.pop(job_id, None)
+            ACTIVE_PROCESSES.pop(job_id, None)
+            JOB_QUEUE.task_done()
+
+
+async def ui_updater(state: dict):
+    last_text = ""
+    while not state.get("done", False):
+        try:
+            bar = generate_progress_bar(state.get("percent", 0.0))
+            act = state.get("action", "")
+            if act == "download":
+                text = f"📥 <b>در حال دریافت از تلگرام...</b>\n{bar}"
+            elif act == "encode":
+                eta_val = state.get("eta")
+                if state.get("file_size", 0) >= 40 * 1024 * 1024 and eta_val:
+                    text = f"⚙️ <b>در حال فشرده‌سازی و پردازش...</b>\n{bar}\n⏱ زمان باقیمانده: <b>{eta_val}</b>"
+                else:
+                    text = f"⚙️ <b>در حال فشرده‌سازی و پردازش...</b>\n{bar}"
+            elif act == "upload":
+                text = f"📤 <b>پردازش تمام شد، در حال ارسال فایل...</b>\n{bar}"
+            else:
+                text = "⏳ لطفاً چند لحظه صبر کنید..."
+
+            if text != last_text:
+                await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]), parse_mode="HTML")
+                last_text = text
+        except (TelegramBadRequest, asyncio.CancelledError):
+            pass
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+
+def pyro_progress(curr, total, state):
+    if total > 0:
+        state["percent"] = (curr / total) * 100.0
+
+
+async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_retries: int = 3):
+    initial_size = job["file_size"]
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
+        if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
+            return
+
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except OSError:
+                pass
+
+        ui_state["action"] = "download"
+        ui_state["percent"] = 0.0
+
+        try:
+            if initial_size < 19.5 * 1024 * 1024:
+                file_info = await bot.get_file(job["file_id"])
+                await bot.download_file(file_info.file_path, destination=input_path)
+            else:
+                msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
+                if not msg or msg.empty:
+                    raise RuntimeError("پیام حاوی فایل یافت نشد.")
+
+                try:
+                    with open(input_path, "wb") as f:
+                        curr_bytes = 0
+                        async for chunk in pyro.stream_media(msg):
+                            if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
+                                return
+                            f.write(chunk)
+                            curr_bytes += len(chunk)
+                            if initial_size > 0:
+                                ui_state["percent"] = min(99.0, (curr_bytes / initial_size) * 100.0)
+                except Exception:
+                    await pyro.download_media(
+                        msg,
+                        file_name=input_path,
+                        progress=pyro_progress,
+                        progress_args=(ui_state,)
+                    )
+
+            if os.path.exists(input_path):
+                downloaded_bytes = os.path.getsize(input_path)
+                if downloaded_bytes >= (initial_size * 0.90):
+                    ui_state["percent"] = 100.0
+                    return
+                else:
+                    raise RuntimeError(f"دانلود ناقص: {downloaded_bytes / (1024*1024):.2f} مگابایت")
+            else:
+                raise RuntimeError("فایل ذخیره نشد.")
+
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(2)
+
+    raise RuntimeError(f"خطا در دانلود فایل: {last_err}")
+
+
+async def process_job(job: dict):
+    job_id = job["job_id"]
+    media_type = job.get("media_type", "video")
+    status_msg = job["status_msg"]
+    initial_size = job["file_size"]
+    user_id = job.get("user_id", job["chat_id"])
+    u = job.get("user")
+    user_name = u.full_name if u else "کاربر"
+    username = u.username or ""
+    orig_ext = job.get("orig_ext", "bin")
+    token = job.get("token")
+
+    start_cpu_sec = get_cpu_seconds()
+    start_wall_time = time.time()
+
+    if media_type == "video":
+        cfg = job["cfg"]
+        mode = cfg["mode"]
+        fmt_choice = cfg.get("fmt", "orig")
+        if mode == "audio":
+            out_ext = fmt_choice if fmt_choice in ["mp3", "wav", "m4a", "ogg", "flac"] else "mp3"
+        else:
+            out_ext = orig_ext if fmt_choice == "orig" and orig_ext in ["mp4", "mkv", "mov"] else ("mp4" if fmt_choice == "orig" else fmt_choice)
+    elif media_type == "audio":
+        out_ext = job["audio_cfg"]["fmt"]
+    else:
+        out_ext = "bin"
+
+    input_path = os.path.join(DOWNLOAD_DIR, f"in_{job_id}.{orig_ext}")
+    output_path = os.path.join(DOWNLOAD_DIR, f"out_{job_id}.{out_ext}")
+    thumb_path = os.path.join(DOWNLOAD_DIR, f"thumb_{job_id}.jpg")
+
+    ui_state = {
+        "status_msg": status_msg,
+        "job_id": job_id,
+        "action": "download",
+        "percent": 0.0,
+        "done": False,
+        "file_size": initial_size,
+        "eta": None
+    }
+    ui_task = asyncio.create_task(ui_updater(ui_state))
+
+    try:
+        for p in (input_path, output_path, thumb_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+        await download_with_retry(job, input_path, ui_state, max_retries=3)
+
+        if ACTIVE_PROCESSES[job_id]["cancelled"]:
+            return
+
+        gc.collect()
+        ui_state["action"] = "encode"
+        ui_state["percent"] = 5.0
+
+        if media_type == "video":
+            cfg = job["cfg"]
+            mode = cfg["mode"]
+            speed_factor = float(cfg.get("speed", "1.0"))
+
+            in_meta = await get_media_meta(input_path)
+            duration = in_meta["duration"]
+            has_audio = in_meta.get("has_audio", False)
+            eff_duration = duration / speed_factor if (speed_factor > 0 and duration > 0) else duration
+
+            in_w = in_meta.get("width", 1280)
+            in_h = in_meta.get("height", 720)
+            orig_min_dim = min(in_w, in_h) if (in_w and in_h) else 1080
+
+            target_res = cfg.get("res", "orig")
+            if target_res != "orig" and target_res.isdigit():
+                if int(target_res) > orig_min_dim:
+                    target_res = "orig"
+                    cfg["res"] = "orig"
+
+            if mode == "audio":
+                cmd = [
+                    FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path,
+                    "-vn", "-map_metadata", "-1",
+                    "-max_muxing_queue_size", "1024"
+                ]
+                if out_ext == "mp3":
+                    cmd += ["-c:a", "libmp3lame", "-b:a", "96k", "-ar", "44100"]
+                elif out_ext == "wav":
+                    cmd += ["-c:a", "pcm_s16le", "-ar", "44100"]
+                elif out_ext == "m4a":
+                    cmd += ["-c:a", "aac", "-b:a", "96k", "-ar", "44100"]
+                elif out_ext == "flac":
+                    cmd += ["-c:a", "flac"]
+                elif out_ext == "ogg":
+                    cmd += ["-c:a", "libvorbis", "-q:a", "3"]
+
+                if speed_factor != 1.0:
+                    cmd += ["-filter:a", f"atempo={speed_factor}"]
+                cmd += ["-progress", "pipe:2", output_path]
+            else:
+                v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
+                if v_codec == "libx265":
+                    crf_map = {"light": "24", "medium": "29", "heavy": "34"}
+                else:
+                    crf_map = {"light": "22", "medium": "27", "heavy": "32"}
+
+                include_real_audio = has_audio and not cfg["mute"]
+
+                cmd = [FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path]
+                if not include_real_audio:
+                    cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+
+                cmd += ["-max_muxing_queue_size", "1024"]
+
+                vf = []
+                if speed_factor != 1.0:
+                    vf.append(f"setpts={1.0 / speed_factor}*PTS")
+                
+                # رفع تضمینی باگ کرش ابعاد فرد در فرمت‌های yuv420p
+                if target_res != "orig":
+                    vf.append(f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear")
+                else:
+                    vf.append("scale='trunc(iw/2)*2':'trunc(ih/2)*2'")
+
+                cmd += [
+                    "-map", "0:v:0", "-c:v", v_codec,
+                    "-crf", crf_map.get(cfg["crf"], "27"),
+                    "-preset", "veryfast", "-pix_fmt", "yuv420p"
+                ]
+                if vf:
+                    cmd += ["-vf", ",".join(vf)]
+
+                # مهار مصرف رم انکودر برای ران ماندن دائمی در سرورهای ابری
+                if v_codec == "libx265":
+                    cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=10:bframes=2"]
+                elif v_codec == "libx264":
+                    cmd += ["-x264opts", "rc-lookahead=15:sync-lookahead=0:bframes=2"]
+
+                if include_real_audio:
+                    if speed_factor != 1.0:
+                        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k", "-filter:a", f"atempo={speed_factor}"]
+                    else:
+                        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k"]
+                else:
+                    cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "32k", "-shortest"]
+
+                cmd += ["-avoid_negative_ts", "make_zero"]
+                if out_ext in ["mp4", "mov", "m4a"]:
+                    cmd += ["-movflags", "+faststart"]
+                cmd += ["-progress", "pipe:2", output_path]
+
+            returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
+            if returncode != 0:
+                if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled") or returncode == -1:
+                    return
+                raise RuntimeError(f"خطای انکود ویدیو ({returncode}):\n{err_msg}")
+
+        elif media_type == "audio":
+            acfg = job["audio_cfg"]
+            br = acfg["bitrate"]
+            sp = float(acfg["speed"])
+            in_meta = await get_media_meta(input_path)
+            duration = in_meta["duration"]
+            eff_duration = duration / sp if (sp > 0 and duration > 0) else duration
+
+            cmd = [
+                FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path,
+                "-vn", "-map_metadata", "-1"
+            ]
+            
+            ar_rate = "32000" if br in ["48k", "64k"] else "44100"
+
+            if out_ext == "mp3":
+                cmd += ["-c:a", "libmp3lame", "-b:a", br, "-ar", ar_rate]
+            elif out_ext == "m4a":
+                cmd += ["-c:a", "aac", "-b:a", br, "-ar", ar_rate]
+            elif out_ext == "ogg":
+                cmd += ["-c:a", "libvorbis", "-b:a", br, "-ar", ar_rate]
+            elif out_ext == "flac":
+                cmd += ["-c:a", "flac"]
+
+            if sp != 1.0:
+                cmd += ["-filter:a", f"atempo={sp}"]
+            cmd += ["-progress", "pipe:2", output_path]
+
+            returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
+            if returncode != 0:
+                if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled") or returncode == -1:
+                    return
+                raise RuntimeError(f"خطا در پردازش فایل صوتی ({returncode}):\n{err_msg}")
+
+        if ACTIVE_PROCESSES[job_id]["cancelled"]:
+            return
+
+        if not os.path.exists(output_path):
+            raise RuntimeError("فایل نهایی ایجاد نشد.")
+
+        final_size = os.path.getsize(output_path)
+        ui_state["action"] = "upload"
+        ui_state["percent"] = 0.0
+
+        chat_id = job["chat_id"]
+        show_details = get_user_show_details(user_id)
+
+        if final_size >= initial_size:
+            reduction_str = "۰٪"
+            size_notice = "\n⚠️ <i>فایل از قبل حداکثر بهینه‌سازی ممکن را داشته است.</i>"
+        else:
+            reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
+            reduction_str = f"{reduction}%"
+            size_notice = ""
+
+        is_audio_extraction = (media_type == "video" and job["cfg"]["mode"] == "audio")
+
+        if is_audio_extraction:
+            caption = (
+                f"🎵 <b>صدای ویدیوی شما استخراج شد!</b>\n\n"
+                f"<blockquote>📁 فرمت: <b>{out_ext.upper()}</b>\n"
+                f"📦 حجم خروجی: <b>{final_size / (1024*1024):.2f} مگابایت</b></blockquote>"
+            )
+            if show_details:
+                caption += f"\n\n<blockquote>🛠 <b>مشخصات:</b> فرمت {out_ext.upper()} | موزیک صوتی</blockquote>"
+        elif media_type == "video":
+            caption = (
+                f"✨ <b>ویدیوی شما آماده شد!</b>\n\n"
+                f"<blockquote>📁 فرمت خروجی: <b>{out_ext.upper()}</b>\n"
+                f"📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} مگابایت</b>\n"
+                f"📉 حجم نهایی: <b>{final_size / (1024*1024):.2f} مگابایت</b>\n"
+                f"⚡️ میزان کاهش: <b>{reduction_str}</b></blockquote>"
+                f"{size_notice}"
+            )
+            if show_details:
+                codec_name = "H.265" if job['cfg']['codec'] == "h265" else "H.264"
+                res_lbl = "کیفیت اصلی" if job['cfg']['res'] == "orig" else f"{job['cfg']['res']}p"
+                caption += (
+                    f"\n\n<blockquote>🛠 <b>تنظیمات اعمال‌شده:</b>\n"
+                    f"▫️ کیفیت: <b>{res_lbl}</b> | انکودر: <b>{codec_name}</b>\n"
+                    f"▫️ سرعت ویدیو: <b>{job['cfg'].get('speed', '1.0')}x</b></blockquote>"
+                )
+        elif media_type == "audio":
+            caption = (
+                f"🎵 <b>فایل صوتی شما آماده شد!</b>\n\n"
+                f"<blockquote>📁 فرمت: <b>{out_ext.upper()}</b>\n"
+                f"📦 حجم اولیه: <b>{initial_size / (1024*1024):.2f} مگابایت</b>\n"
+                f"📉 حجم نهایی: <b>{final_size / (1024*1024):.2f} مگابایت</b>\n"
+                f"⚡️ میزان کاهش: <b>{reduction_str}</b></blockquote>"
+                f"{size_notice}"
+            )
+
+        post_buttons = []
+        if media_type == "video" and not is_audio_extraction:
+            post_buttons.append([PyroInlineKeyboardButton("🎵 استخراج صدای همین ویدیو", callback_data=f"quick_audio:{job_id}")])
+        post_markup = PyroInlineKeyboardMarkup(post_buttons) if post_buttons else None
+
+        if is_audio_extraction or media_type == "audio":
+            meta_aud = await get_media_meta(output_path)
+            sent_msg = await pyro.send_audio(
+                chat_id=chat_id,
+                audio=output_path,
+                duration=meta_aud.get("duration", 0),
+                caption=caption,
+                reply_markup=post_markup,
+                progress=pyro_progress,
+                progress_args=(ui_state,)
+            )
+            delivered_file_id = sent_msg.audio.file_id
+        elif media_type == "video":
+            meta_vid = await get_media_meta(output_path)
+            dur = meta_vid["duration"]
+            await generate_thumbnail(output_path, thumb_path, dur)
+            has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
+            sent_msg = await pyro.send_video(
+                chat_id=chat_id,
+                video=output_path,
+                duration=dur,
+                width=meta_vid["width"],
+                height=meta_vid["height"],
+                thumb=thumb_path if has_thumb else None,
+                caption=caption,
+                supports_streaming=True,
+                reply_markup=post_markup,
+                progress=pyro_progress,
+                progress_args=(ui_state,)
+            )
+            delivered_file_id = sent_msg.video.file_id
+
+        if token and token in ADMIN_MEDIA_STORE:
+            ADMIN_MEDIA_STORE[token]["comp_file_id"] = delivered_file_id
+
+        ui_state["done"] = True
+        ui_task.cancel()
+        await status_msg.delete()
+
+        end_cpu_sec = get_cpu_seconds()
+        end_wall_time = time.time()
+        cpu_used_sec = max(0.01, end_cpu_sec - start_cpu_sec)
+        wall_time_sec = max(0.01, end_wall_time - start_wall_time)
+
+        cpu_cost = cpu_used_sec * 0.00000772
+        ram_cost = wall_time_sec * 0.35 * 0.00000386
+        egress_gb = final_size / (1024 ** 3)
+        network_cost = egress_gb * 0.05
+        exact_cost = cpu_cost + ram_cost + network_cost
+
+        await record_job_stats(
+            user_id=user_id,
+            name=user_name,
+            username=username,
+            cost=exact_cost,
+            file_size_mb=initial_size / (1024 * 1024),
+            file_id=job["file_id"]
+        )
+
+        if user_id != ADMIN_ID:
+            admin_finish_kb = InlineKeyboardBuilder()
+            admin_finish_kb.button(text="🎬 دریافت فایل بهینه‌شده", callback_data=f"adm_comp:{token}")
+            admin_finish_kb.button(text="📹 دریافت فایل اصلی کاربر", callback_data=f"adm_orig:{token}")
+            admin_finish_kb.adjust(1)
+
+            username_str = f"@{username}" if username else "ندارد"
+            if is_audio_extraction:
+                log_2 = (
+                    "✅ <b>استخراج صدای ویدیو تکمیل شد</b>\n\n"
+                    f"<blockquote>👤 کاربر: {html.escape(user_name)}\n"
+                    f"🆔 شناسه: <code>{user_id}</code>\n"
+                    f"🔗 نام کاربری: {html.escape(username_str)}\n"
+                    f"📁 فرمت: {out_ext.upper()}\n"
+                    f"📦 حجم خروجی: {final_size / (1024*1024):.2f} مگابایت\n"
+                    f"💵 هزینه پردازش: ${exact_cost:.5f}</blockquote>"
+                )
+            else:
+                log_2 = (
+                    "✅ <b>پردازش رسانه تکمیل شد</b>\n\n"
+                    f"<blockquote>👤 کاربر: {html.escape(user_name)}\n"
+                    f"🆔 شناسه: <code>{user_id}</code>\n"
+                    f"🔗 نام کاربری: {html.escape(username_str)}\n"
+                    f"📁 فرمت: {out_ext.upper()}\n"
+                    f"📦 حجم ورودی: {initial_size / (1024*1024):.2f} مگابایت\n"
+                    f"📉 حجم خروجی: {final_size / (1024*1024):.2f} مگابایت\n"
+                    f"⚡️ کاهش حجم: {reduction_str}\n"
+                    f"💵 هزینه پردازش: ${exact_cost:.5f}</blockquote>"
+                )
+            try:
+                await bot.send_message(chat_id=ADMIN_ID, text=log_2, reply_markup=admin_finish_kb.as_markup(), parse_mode="HTML")
+            except Exception as adm_e:
+                logging.error(f"Finish log error: {adm_e}")
+
+    finally:
+        ui_state["done"] = True
+        if not ui_task.done():
+            ui_task.cancel()
+        for p in (input_path, output_path, thumb_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 async def main():
