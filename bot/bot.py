@@ -1457,14 +1457,16 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
         rem_mb_str = "نامحدود"
 
     text = (
-        f"📊 <b>وضعیت حساب کاربری</b>\n\n"
-        f"<blockquote>🆔 آیدی عددی: <code>{user_id}</code>\n"
-        f"🎬 فایل‌های موفق: <b>{total_jobs} تا</b>\n"
-        f"📦 مصرف امروزت: <b>{today_mb:.1f} مگابایت</b>\n\n"
-        f"📈 <b>سهمیه امروز:</b>\n"
-        f"{progress_bar_str}\n"
-        f"▫️ چیزی که مونده: <b>{rem_mb_str}</b></blockquote>\n\n"
-        f"💡 <i>سهمیه روزانه‌ت هر شب ساعت ۰۰:۰۰ دوباره پر میشه.</i>"
+        f"📊 <b>حساب کاربری</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🆔 <code>{user_id}</code>\n"
+        f"🎬 فایل‌های موفق: <b>{total_jobs}</b>\n"
+        f"📦 مصرف امروز: <b>{today_mb:.1f} MB</b>\n\n"
+        f"📈 <b>سهمیه امروز</b>\n"
+        f"<code>{progress_bar_str}</code> <b>{min(today_mb, 100):.1f}%</b>\n"
+        f"🟢 باقی‌مانده: <b>{rem_mb_str}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💡 سهمیه هر شب ساعت <b>۰۰:۰۰</b> ریست میشه."
     )
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
@@ -2312,7 +2314,7 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, s
     await register_user(user_id, u.full_name or "", u.username or "")
 
     text = (
-        "⚙️ <b>تنظیمات بات</b>\n\n"
+        "⚙️ <b>تنظیمات\n📱 برای موبایل، دکمه‌ها کوتاه و دو ستونه‌ان. بات</b>\n\n"
         "<blockquote>اینجا می‌تونی مدل نمایش گزارش‌ها و تنظیمات پیش‌فرض تبدیل ویدیوها رو مشخص کنی:</blockquote>"
     )
     kb = get_settings_inline_keyboard(user_id)
