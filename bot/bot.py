@@ -42,6 +42,8 @@ DOWNLOAD_DIR = "downloads"
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
 
+SIZE_LIMIT_EXCEEDED_MSG = "⚠️ به خاطر حفظ کیفیت بات و رایگان بودنش حجم‌های بالاتر از ۳۰۰ مگ قبول نمیشه."
+
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 START_PHRASES = [
@@ -93,7 +95,7 @@ class AdminMessageState(StatesGroup):
 def get_tehran_datetime() -> tuple[str, str]:
     now = datetime.datetime.now(TEHRAN_TZ)
     time_str = now.strftime("%H:%M")
-    
+
     gy, gm, gd = now.year, now.month, now.day
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
     gy2 = gy if gm > 2 else gy - 1
@@ -111,7 +113,7 @@ def get_tehran_datetime() -> tuple[str, str]:
     else:
         jm = 7 + ((days - 186) // 30)
         jd = 1 + ((days - 186) % 30)
-        
+
     date_str = f"{jy}/{jm:02d}/{jd:02d}"
     return time_str, date_str
 
@@ -651,6 +653,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
+                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -733,7 +736,7 @@ async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: fl
                     ui_state["eta"] = f"{mins} دقیقه و {secs} ثانیه" if mins > 0 else f"{secs} ثانیه"
 
     await proc.wait()
-    
+
     if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
         return -1, "cancelled"
 
@@ -741,7 +744,7 @@ async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: fl
         err_output = "فرایند به دلیل کمبود حافظه (OOM Killer) توسط سیستم متوقف شد."
     else:
         err_output = "\n".join(last_lines[-5:]) if last_lines else ""
-        
+
     return proc.returncode, err_output
 
 
@@ -902,7 +905,7 @@ def build_audio_keyboard(bitrate="96k", fmt="mp3", speed="1.0"):
         b.button(text=txt + (" ✅" if fmt == af else ""), callback_data=f"acfg:{bitrate}:{af}:{speed}")
     for sp, txt in [("1.0", "سرعت ۱x"), ("1.25", "۱.۲۵x"), ("1.5", "۱.۵x")]:
         b.button(text=txt + (" ✅" if speed == sp else ""), callback_data=f"acfg:{bitrate}:{fmt}:{sp}")
-    
+
     start_phrase = random.choice(START_PHRASES)
     b.button(text=f"🟢 {start_phrase}", callback_data=f"arun:{bitrate}:{fmt}:{speed}")
     b.button(text="🔴 پشیمون شدم", callback_data="cancel_panel")
@@ -984,11 +987,26 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.button(text="⚙️ تنظیمات", callback_data="open_settings")
     builder.button(text="📊 حساب و آمار من", callback_data="show_my_stats")
+    builder.button(text="🚀 آخرین تغییرات ربات", callback_data="show_changelog")
     builder.button(text="📞 پشتیبانی", callback_data="start_support")
-    builder.adjust(2, 1)
+    builder.adjust(2, 2)
 
     await message.answer(welcome_text, reply_markup=get_main_reply_keyboard(message.from_user.id), parse_mode="HTML")
     await message.answer("📌 منوی دسترسی سریع:", reply_markup=builder.as_markup())
+
+
+@dp.callback_query(F.data == "show_changelog", StateFilter("*"))
+async def show_changelog_handler(callback: aiotypes.CallbackQuery):
+    await callback.answer()
+    changelog_text = (
+        f"🚀 <b>آخرین تغییرات ربات (نسخه {BOT_VERSION})</b>\n\n"
+        "<blockquote>"
+        "⚡️ <b>افزایش سرعت پردازش:</b> سیستم تبدیل فایل‌ها بهینه‌سازی شده و پردازش‌ها کمی سریع‌تر از قبل انجام می‌شوند.\n\n"
+        "🗜 <b>بهبود فشرده‌سازی:</b> موتور تبدیل ویدیو ارتقا پیدا کرده است. برای دریافت کمترین حجم ممکن همراه با حفظ کیفیت، توصیه می‌شود در تنظیمات گزینه <b>H.265</b> را انتخاب کنید.\n\n"
+        "🎨 <b>بهبود رابط کاربری:</b> طراحی پیام‌ها، منوها و دکمه‌های کنترلی روان‌تر و ساده‌تر شده است."
+        "</blockquote>"
+    )
+    await callback.message.answer(changelog_text, parse_mode="HTML")
 
 
 @dp.message(F.text == "📊 حساب و آمار من", StateFilter("*"))
@@ -1001,7 +1019,7 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
 
     today_mb = float(u_stat.get("today_mb") or 0.0) if u_stat else 0.0
     total_jobs = int(u_stat.get("total_jobs") or 0) if u_stat else 0
-    
+
     if limit > 0:
         pct = min(100.0, (today_mb / limit) * 100.0)
         progress_bar_str = generate_progress_bar(pct)
@@ -1144,7 +1162,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         if fsize > MAX_FILE_SIZE:
             if os.path.exists(downloaded_file):
                 os.remove(downloaded_file)
-            return await status_msg.edit_text("⚠️ حجم ویدیو بیش از سقف مجاز ۳۰۰ مگابایت است.")
+            return await status_msg.edit_text(SIZE_LIMIT_EXCEEDED_MSG)
 
         meta = await get_media_meta(downloaded_file)
         thumb_path = os.path.join(DOWNLOAD_DIR, f"ytdl_thumb_{token}.jpg")
@@ -1253,7 +1271,6 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     }
 
 
-# --- پنل مدیریت ادمین ---
 @dp.message(Command("admin"), StateFilter("*"))
 @dp.message(F.text == "👑 پنل مدیریت", StateFilter("*"))
 async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
@@ -1908,7 +1925,7 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
         doc = message.document
         mime = (doc.mime_type or "").lower()
         file_name = (doc.file_name or "").lower()
-        
+
         if mime.startswith("video/") or file_name.endswith((".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".3gp", ".ts")):
             file_obj = doc
             media_category = "video"
@@ -1923,12 +1940,8 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
 
     file_size_bytes = file_obj.file_size or 0
     if file_size_bytes > MAX_FILE_SIZE and u.id != ADMIN_ID:
-        support_kb = InlineKeyboardBuilder()
-        support_kb.button(text="📞 پشتیبانی", callback_data="start_support")
         return await message.reply(
-            "⚠️ <b>حجم این فایل بیشتر از سقف مجاز (۳۰۰ مگابایت) است.</b>\n\n"
-            "جهت پردازش فایل‌های حجیم‌تر با پشتیبانی هماهنگ کنید:",
-            reply_markup=support_kb.as_markup(),
+            SIZE_LIMIT_EXCEEDED_MSG,
             parse_mode="HTML"
         )
 
@@ -2097,7 +2110,7 @@ async def cancel_panel(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data.startswith("stop:"), StateFilter("*"))
 async def stop_processing(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":")[1]
-    
+
     if job_id in ACTIVE_PROCESSES or job_id in RUNNING_TASKS:
         ACTIVE_PROCESSES[job_id]["cancelled"] = True
         proc = ACTIVE_PROCESSES.get(job_id, {}).get("proc")
@@ -2125,7 +2138,7 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     except Exception:
         pass
     _, br, af, sp = callback.data.split(":")
-    
+
     panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
     orig_msg = callback.message.reply_to_message
     file_id = panel_meta.get("file_id") or (orig_msg.audio.file_id if orig_msg and (orig_msg.audio or orig_msg.voice or orig_msg.document) else None)
@@ -2203,17 +2216,17 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     req = USER_REQUESTS.get(job_id)
     if not req:
         return await callback.message.reply("❌ اطلاعات این ویدیو منقضی شده است.")
-    
+
     audio_cfg = {
         "mode": "audio", "res": "orig", "codec": "h264",
         "crf": "medium", "mute": False, "speed": "1.0", "fmt": "mp3"
     }
-    
+
     status_msg = await callback.message.reply(
         "⏳ <b>در صف استخراج صوت قرار گرفت...</b>",
         parse_mode="HTML"
     )
-    
+
     user_id = callback.from_user.id
     token = uuid.uuid4().hex[:8]
     if len(ADMIN_MEDIA_STORE) > 500:
@@ -2265,10 +2278,10 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     except Exception:
         pass
     cfg = decode_cfg(callback.data[4:])
-    
+
     panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
     orig_msg = callback.message.reply_to_message
-    
+
     file_id = panel_meta.get("file_id") or (orig_msg.video.file_id if orig_msg and orig_msg.video else (orig_msg.document.file_id if orig_msg and orig_msg.document else None))
     file_size = panel_meta.get("file_size") or (orig_msg.video.file_size if orig_msg and orig_msg.video else (orig_msg.document.file_size if orig_msg and orig_msg.document else 0))
     orig_msg_id = panel_meta.get("orig_msg_id") or (orig_msg.message_id if orig_msg else callback.message.message_id)
@@ -2303,7 +2316,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     if user_id != ADMIN_ID:
         u_stat = await get_user_stat(user_id)
         user_cost = float(u_stat.get("total_cost") or 0.0) if u_stat else 0.0
-        
+
         cfg_res_label = "کیفیت اصلی" if cfg['res'] == "orig" else f"{cfg['res']}p"
         cfg_str = f"{cfg['mode']} | {cfg_res_label} | {cfg['codec']}" if cfg['mode'] == "video" else f"استخراج صوت ({cfg['fmt'].upper()})"
         admin_req_kb = InlineKeyboardBuilder()
@@ -2444,7 +2457,7 @@ async def ui_updater(state: dict):
                 text = f"📥 <b>در حال دریافت از تلگرام...</b>\n{bar}"
             elif act == "encode":
                 eta_val = state.get("eta")
-                if state.get("file_size", 0) >= 40 * 1024 * 1024 and eta_val:
+                if eta_val:
                     text = f"⚙️ <b>در حال فشرده‌سازی و پردازش...</b>\n{bar}\n⏱ زمان باقیمانده: <b>{eta_val}</b>"
                 else:
                     text = f"⚙️ <b>در حال فشرده‌سازی و پردازش...</b>\n{bar}"
@@ -2640,7 +2653,6 @@ async def process_job(job: dict):
 
                 include_real_audio = has_audio and not cfg["mute"]
 
-                # استفاده ایمن از ۲ ترد برای جلوگیری قطعی از OOM Killer و افزایش ۳ برابری سرعت
                 cmd = [FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path]
                 if not include_real_audio:
                     cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
@@ -2650,7 +2662,7 @@ async def process_job(job: dict):
                 vf = []
                 if speed_factor != 1.0:
                     vf.append(f"setpts={1.0 / speed_factor}*PTS")
-                
+
                 if target_res != "orig":
                     vf.append(f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear")
                 else:
@@ -2664,7 +2676,6 @@ async def process_job(job: dict):
                 if vf:
                     cmd += ["-vf", ",".join(vf)]
 
-                # تنظیمات کنترل حافظه با حفظ توان ۲ ترد موازی
                 if v_codec == "libx265":
                     cmd += ["-x265-params", "pools=2:frame-threads=2:rc-lookahead=10:bframes=2"]
                 elif v_codec == "libx264":
@@ -2701,7 +2712,7 @@ async def process_job(job: dict):
                 FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
                 "-vn", "-map_metadata", "-1"
             ]
-            
+
             ar_rate = "32000" if br in ["48k", "64k"] else "44100"
 
             if out_ext == "mp3":
@@ -2895,7 +2906,7 @@ async def main():
     clean_residual_downloads()
     init_prefs_cache()
     await init_db()
-    
+
     logging.info("Connecting Pyrogram client...")
     try:
         await pyro.start()
@@ -2906,7 +2917,7 @@ async def main():
     asyncio.create_task(queue_worker())
     asyncio.create_task(midnight_reset_worker())
     logging.info(f"Bot v{BOT_VERSION} is now online.")
-    
+
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
