@@ -28,11 +28,11 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.4"
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
-API_ID = int(os.getenv("API_ID", "26202905"))
-API_HASH = os.getenv("API_HASH", "ec9fd909b90288d01befa4f87c8d71c1")
+BOT_VERSION = "2.4.5"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 TEHRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
@@ -41,6 +41,13 @@ MAX_FILE_SIZE = 300 * 1024 * 1024
 DOWNLOAD_DIR = "downloads"
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is required.")
+if not ADMIN_ID:
+    raise RuntimeError("ADMIN_ID environment variable is required.")
+if not API_ID or not API_HASH:
+    raise RuntimeError("API_ID and API_HASH environment variables are required.")
 
 SIZE_LIMIT_EXCEEDED_MSG = "⚠️ به خاطر حفظ کیفیت بات و رایگان بودنش حجم‌های بالاتر از ۳۰۰ مگ قبول نمیشه."
 
@@ -967,18 +974,58 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
         pass
 
 
+async def clear_tracked_settings_message(chat_id: int, state: FSMContext):
+    """Clear the current FSM state and remove any previously opened settings panel."""
+    try:
+        data = await state.get_data()
+    except Exception:
+        data = {}
+
+    settings_message_id = data.get("settings_message_id")
+    await state.clear()
+
+    if settings_message_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=int(settings_message_id))
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+        except Exception as e:
+            logging.debug(f"Tracked settings message cleanup failed: {e}")
+
+
 @dp.message(CommandStart(), StateFilter("*"))
 async def start_handler(message: aiotypes.Message, state: FSMContext):
-    await state.clear()
     u = message.from_user
+    await clear_tracked_settings_message(message.chat.id, state)
     await register_user(u.id, u.full_name or "", u.username or "")
 
     time_str, date_str = get_tehran_datetime()
     user_name = html.escape(u.full_name or "کاربر")
+    username = f"@{html.escape(u.username)}" if u.username else "ندارد"
+    language = html.escape(u.language_code or "نامشخص")
+    user_type = "بات" if u.is_bot else "کاربر"
+    premium = "بله ✅" if getattr(u, "is_premium", False) else "خیر"
+
+    start_log = (
+        "🚀 <b>/start جدید</b>\n\n"
+        f"<blockquote>👤 نام: {user_name}\n"
+        f"🆔 آیدی: <code>{u.id}</code>\n"
+        f"🔗 یوزرنیم: {username}\n"
+        f"🌐 زبان: <b>{language}</b>\n"
+        f"👤 نوع حساب: <b>{user_type}</b>\n"
+        f"⭐️ پریمیوم: <b>{premium}</b>\n"
+        f"💬 چت آیدی: <code>{message.chat.id}</code>\n"
+        f"⏰ زمان: <b>{time_str} | {date_str}</b></blockquote>"
+    )
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=start_log, parse_mode="HTML")
+    except Exception as e:
+        logging.debug(f"Start log send failed: {e}")
 
     welcome_text = (
         f"👋 <b>سلام {user_name}، خیلی خوش اومدی!</b>\n\n"
-        f"<blockquote>با این بات می‌تونی ویدیوهات و ویس‌هات رو حسابی کم‌حجم و مرتب کنی یا خیلی راحت از یوتیوب و اینستاگرام ویدیو بگیری.</blockquote>\n\n"
+        f"<blockquote>با این بات می‌تونی ویدیوهات و ویس‌هات رو حسابی کم‌حجم و مرتب کنی یا خیلی راحت از یوتیوب و اینستاگرام ویدیو بگیری.\n\n"
+        f"⚠️ چون بات کاملاً رایگانه، سرعت پردازش ویدیوها پایین‌تر از بقیه بات‌هاست.</blockquote>\n\n"
         f"<blockquote>🤖 <b>نسخه ربات:</b> {BOT_VERSION}\n"
         f"⏰ <b>ساعت و تاریخ:</b> {time_str} | {date_str}</blockquote>\n\n"
         f"برای شروع یکی از گزینه‌ها رو بزن:"
@@ -999,11 +1046,11 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
 async def show_changelog_handler(callback: aiotypes.CallbackQuery):
     await callback.answer()
     changelog_text = (
-        f"🚀 <b>تغییرات جدید بات (نسخه {BOT_VERSION})</b>\n\n"
+        f"🚀 <b>آپدیت‌های جدید بات (نسخه {BOT_VERSION})</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها سریع‌تر از قبل حاضر بشن.\n\n"
-        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور و روون‌تر کردیم تا کار باهاشون راحت باشه."
+        "⚡️ <b>تبدیل یه کوچولو سریع‌تر شده.</b>\n\n"
+        "🗜 <b>فشرده‌سازی بهتر و کم‌حجم‌تر شده.</b>\n\n"
+        "🎨 <b>منوها و دکمه‌ها جمع‌وجورتر شدن.</b>"
         "</blockquote>"
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
@@ -1063,7 +1110,7 @@ URL_REGEX = re.compile(r'(https?://[^\s]+)')
 
 @dp.message(F.text.regexp(URL_REGEX), StateFilter("*"))
 async def handle_url_message(message: aiotypes.Message, state: FSMContext):
-    await state.clear()
+    await clear_tracked_settings_message(message.chat.id, state)
     u = message.from_user
     await register_user(u.id, u.full_name or "", u.username or "")
 
@@ -1104,7 +1151,10 @@ async def cancel_url_dl(callback: aiotypes.CallbackQuery):
     token = callback.data.split(":")[1]
     URL_DOWNLOADS.pop(token, None)
     await callback.answer("بی‌خیال شدیم.")
-    await callback.message.edit_text("عملیات کنسل شد.")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
 
 @dp.callback_query(F.data.startswith("ytdl:"), StateFilter("*"))
@@ -1656,7 +1706,7 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
 @dp.message(F.text == "⚙️ تنظیمات", StateFilter("*"))
 @dp.callback_query(F.data == "open_settings", StateFilter("*"))
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
-    await state.clear()
+    await clear_tracked_settings_message(event.chat.id, state)
     user_id = event.from_user.id
     u = event.from_user
     await register_user(user_id, u.full_name or "", u.username or "")
@@ -1668,9 +1718,11 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, s
     kb = get_settings_inline_keyboard(user_id)
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
-        await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        sent = await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
-        await event.answer(text, reply_markup=kb, parse_mode="HTML")
+        sent = await event.answer(text, reply_markup=kb, parse_mode="HTML")
+
+    await state.update_data(settings_message_id=sent.message_id)
 
 
 @dp.callback_query(F.data == "toggle_details", StateFilter("*"))
@@ -1686,7 +1738,7 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
 
 
 @dp.callback_query(F.data == "open_default_settings", StateFilter("*"))
-async def show_default_settings(callback: aiotypes.CallbackQuery):
+async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     user_cfg = get_user_default_cfg(user_id)
     text = (
@@ -1700,6 +1752,7 @@ async def show_default_settings(callback: aiotypes.CallbackQuery):
         reply_markup=build_default_config_keyboard(user_cfg),
         parse_mode="HTML"
     )
+    await state.update_data(settings_message_id=callback.message.message_id)
 
 
 @dp.callback_query(F.data.startswith("defcfg:"), StateFilter("*"))
@@ -1714,7 +1767,7 @@ async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
 
 
 @dp.callback_query(F.data == "back_to_settings", StateFilter("*"))
-async def back_to_settings_menu(callback: aiotypes.CallbackQuery):
+async def back_to_settings_menu(callback: aiotypes.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     text = (
         "⚙️ <b>تنظیمات بات</b>\n\n"
@@ -1726,12 +1779,17 @@ async def back_to_settings_menu(callback: aiotypes.CallbackQuery):
         reply_markup=get_settings_inline_keyboard(user_id),
         parse_mode="HTML"
     )
+    await state.update_data(settings_message_id=callback.message.message_id)
 
 
 @dp.callback_query(F.data == "close_settings", StateFilter("*"))
-async def close_settings_menu(callback: aiotypes.CallbackQuery):
+async def close_settings_menu(callback: aiotypes.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.delete()
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
 
 @dp.callback_query(F.data == "none", StateFilter("*"))
@@ -1762,7 +1820,10 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
 async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("بی‌خیال شدیم.")
-    await callback.message.edit_text("عملیات لغو شد.")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
 
 @dp.message(SupportState.waiting_for_message)
@@ -1880,7 +1941,10 @@ async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
     await callback.answer("بی‌خیال شدیم.")
-    await callback.message.edit_text("عملیات لغو شد.")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
 
 @dp.message(F.photo, StateFilter("*"))
@@ -1910,7 +1974,7 @@ def detect_file_extension(message: aiotypes.Message | None) -> str:
 
 @dp.message(F.video | F.document | F.audio | F.voice, StateFilter("*"))
 async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
-    await state.clear()
+    await clear_tracked_settings_message(message.chat.id, state)
     u = message.from_user
     await register_user(u.id, u.full_name or "", u.username or "")
 
@@ -2098,13 +2162,18 @@ async def update_settings(callback: aiotypes.CallbackQuery):
 
 
 @dp.callback_query(F.data == "cancel_panel", StateFilter("*"))
-async def cancel_panel(callback: aiotypes.CallbackQuery):
+async def cancel_panel(callback: aiotypes.CallbackQuery, state: FSMContext):
     try:
-        await callback.answer()
+        await callback.answer("بی‌خیال شدیم.")
+    except Exception:
+        pass
+    VIDEO_META_CACHE.pop(callback.message.message_id, None)
+    try:
+        await state.clear()
     except Exception:
         pass
     try:
-        await callback.message.edit_text("عملیات لغو شد.")
+        await callback.message.delete()
     except Exception:
         pass
 
@@ -2127,7 +2196,10 @@ async def stop_processing(callback: aiotypes.CallbackQuery):
             task.cancel()
 
         await callback.answer("پردازش رو متوقف کردم.")
-        await callback.message.edit_text("🛑 پردازش متوقف شد و نوبت صف آزاد شد.")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
     else:
         await callback.answer("چیزی در حال پردازش نیست.", show_alert=True)
 
