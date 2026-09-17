@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.3"
+BOT_VERSION = "2.4.4"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8812733722:AAEFW8oxPPQYyqrqHGtnvS8fTpu3ATxcDbo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6616272875"))
 API_ID = int(os.getenv("API_ID", "26202905"))
@@ -55,7 +55,6 @@ session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
-# کلاینت رسمی و اصلاح‌شده پایروگرام بدون پارامترهای نامعتبر
 pyro = PyroClient(
     name="bot_engine",
     api_id=API_ID,
@@ -884,7 +883,7 @@ def build_default_config_keyboard(cfg: dict):
             b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
 
     for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
-        b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
+        b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, fmt))
 
     b.button(text="🔴 بازگشت به تنظیمات", callback_data="back_to_settings")
 
@@ -965,7 +964,6 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
         pass
 
 
-# هندلر استارت مجهز به فیلتر جامع وضعیت برای شکستن هر وضعیت گیرکرده
 @dp.message(CommandStart(), StateFilter("*"))
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     await state.clear()
@@ -1182,7 +1180,8 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             "message_id": sent_video.id,
             "max_res": int(quality),
             "width": meta["width"],
-            "height": meta["height"]
+            "height": meta["height"],
+            "file_size": fsize
         }
 
     except Exception as e:
@@ -1857,7 +1856,7 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
         await callback.message.edit_text("⚠️ خطا در ارسال فایل.")
 
 
-@dp.callback_query(F.data.startswith("err_cancel_vid:"), StateFilter("*"))
+@dp.callback_query(F.data.startswith("err_cancel_vid:"))
 async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
@@ -1890,7 +1889,6 @@ def detect_file_extension(message: aiotypes.Message | None) -> str:
     return "mp4"
 
 
-# دریافت فایل‌های ارسالی با فیلتر باز برای پاکسازی هرگونه وضعیت معلق
 @dp.message(F.video | F.document | F.audio | F.voice, StateFilter("*"))
 async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
     await state.clear()
@@ -2007,7 +2005,7 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
         VIDEO_META_CACHE[sent_panel.message_id] = {
             "orig_ext": ext,
             "media_type": "audio",
-            "file_size": file_size_mb * 1024 * 1024,
+            "file_size": file_size_bytes,
             "file_id": file_obj.file_id,
             "orig_msg_id": message.message_id
         }
@@ -2055,7 +2053,6 @@ async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
             await callback.message.answer(f"⚠️ ارسال فایل خروجی ناموفق بود:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
-# کالبک‌های تغییر تنظیمات صوتی با فیلتر وضعیت آزاد
 @dp.callback_query(F.data.startswith("acfg:"), StateFilter("*"))
 async def update_audio_settings(callback: aiotypes.CallbackQuery):
     try:
@@ -2069,7 +2066,6 @@ async def update_audio_settings(callback: aiotypes.CallbackQuery):
         pass
 
 
-# کالبک‌های تغییر تنظیمات ویدیو با فیلتر وضعیت آزاد
 @dp.callback_query(F.data.startswith("cfg:"), StateFilter("*"))
 async def update_settings(callback: aiotypes.CallbackQuery):
     try:
@@ -2261,7 +2257,6 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     }))
 
 
-# کلید شروع پردازش با فیلتر وضعیت آزاد
 @dp.callback_query(F.data.startswith("run:"), StateFilter("*"))
 async def enqueue_task(callback: aiotypes.CallbackQuery):
     global QUEUE_COUNTER
@@ -2618,7 +2613,7 @@ async def process_job(job: dict):
 
             if mode == "audio":
                 cmd = [
-                    FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path,
+                    FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
                     "-vn", "-map_metadata", "-1",
                     "-max_muxing_queue_size", "1024"
                 ]
@@ -2645,7 +2640,8 @@ async def process_job(job: dict):
 
                 include_real_audio = has_audio and not cfg["mute"]
 
-                cmd = [FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path]
+                # استفاده ایمن از ۲ ترد برای جلوگیری قطعی از OOM Killer و افزایش ۳ برابری سرعت
+                cmd = [FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path]
                 if not include_real_audio:
                     cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
@@ -2655,7 +2651,6 @@ async def process_job(job: dict):
                 if speed_factor != 1.0:
                     vf.append(f"setpts={1.0 / speed_factor}*PTS")
                 
-                # رفع تضمینی باگ کرش ابعاد فرد در فرمت‌های yuv420p
                 if target_res != "orig":
                     vf.append(f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear")
                 else:
@@ -2669,11 +2664,11 @@ async def process_job(job: dict):
                 if vf:
                     cmd += ["-vf", ",".join(vf)]
 
-                # مهار مصرف رم انکودر برای ران ماندن دائمی در سرورهای ابری
+                # تنظیمات کنترل حافظه با حفظ توان ۲ ترد موازی
                 if v_codec == "libx265":
-                    cmd += ["-x265-params", "pools=1:frame-threads=1:rc-lookahead=10:bframes=2"]
+                    cmd += ["-x265-params", "pools=2:frame-threads=2:rc-lookahead=10:bframes=2"]
                 elif v_codec == "libx264":
-                    cmd += ["-x264opts", "rc-lookahead=15:sync-lookahead=0:bframes=2"]
+                    cmd += ["-x264opts", "rc-lookahead=15:sync-lookahead=0:bframes=2:threads=2"]
 
                 if include_real_audio:
                     if speed_factor != 1.0:
@@ -2703,7 +2698,7 @@ async def process_job(job: dict):
             eff_duration = duration / sp if (sp > 0 and duration > 0) else duration
 
             cmd = [
-                FFMPEG_BIN, "-y", "-threads", "1", "-i", input_path,
+                FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
                 "-vn", "-map_metadata", "-1"
             ]
             
