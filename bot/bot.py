@@ -30,7 +30,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.6"
+BOT_VERSION = "2.4.7"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
@@ -105,6 +105,8 @@ class AdminMessageState(StatesGroup):
     waiting_for_custom_limit = State()
     waiting_for_reset_confirmation = State()
     waiting_for_user_search = State()
+    waiting_for_ban_id = State()
+    waiting_for_unban_id = State()
 
 
 def get_tehran_datetime() -> tuple[str, str]:
@@ -189,6 +191,78 @@ def save_backup_stats(stats: dict):
         logging.warning(f"Backup save error: {e}")
 
 
+async def is_user_banned(user_id: int) -> bool:
+    if user_id == ADMIN_ID:
+        return False
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                val = await conn.fetchval("SELECT is_banned FROM user_stats WHERE user_id = $1;", user_id)
+                if val is not None:
+                    return bool(val)
+        except Exception:
+            pass
+    stats = load_backup_stats()
+    return bool(stats.get("users", {}).get(str(user_id), {}).get("is_banned", False))
+
+
+async def set_user_ban_status(user_id: int, banned: bool) -> bool:
+    if user_id == ADMIN_ID:
+        return False
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO user_stats (user_id, is_banned, today_date, total_cost, total_jobs, today_mb)
+                    VALUES ($1, $2, $3, 0.0, 0, 0.0)
+                    ON CONFLICT (user_id) DO UPDATE SET is_banned = $2;
+                """, user_id, banned, get_tehran_date())
+        except Exception as e:
+            logging.error(f"DB set ban status error: {e}")
+
+    stats = load_backup_stats()
+    stats.setdefault("users", {})
+    u_key = str(user_id)
+    if u_key not in stats["users"]:
+        stats["users"][u_key] = {
+            "name": "کاربر",
+            "username": "",
+            "total_cost": 0.0,
+            "total_jobs": 0,
+            "today_date": get_tehran_date().isoformat(),
+            "today_mb": 0.0,
+            "is_banned": banned
+        }
+    else:
+        stats["users"][u_key]["is_banned"] = banned
+    save_backup_stats(stats)
+    return True
+
+
+async def get_banned_users() -> list[dict]:
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT user_id, COALESCE(name, 'کاربر') AS name, COALESCE(username, '') AS username
+                    FROM user_stats WHERE is_banned = TRUE;
+                """)
+                if rows:
+                    return [dict(r) for r in rows]
+        except Exception:
+            pass
+    stats = load_backup_stats()
+    res = []
+    for uid_str, data in stats.get("users", {}).items():
+        if data.get("is_banned"):
+            res.append({
+                "user_id": int(uid_str),
+                "name": data.get("name") or "کاربر",
+                "username": data.get("username") or ""
+            })
+    return res
+
+
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
@@ -232,6 +306,7 @@ async def init_db():
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_at TIMESTAMP;")
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_file_id TEXT;")
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP;")
+            await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     admin_msg_id BIGINT PRIMARY KEY,
@@ -400,6 +475,7 @@ async def touch_last_video_request(user_id: int, name: str = "", username: str =
         "max_video": None,
         "last_request_at": None,
         "last_request_file_id": None,
+        "is_banned": False
     })
     if name:
         u["name"] = name
@@ -565,6 +641,7 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
             "max_video": None,
             "last_request_at": None,
             "last_request_file_id": None,
+            "is_banned": False,
             "last_activity_at": datetime.datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -683,6 +760,56 @@ async def get_url_preview_info(url: str) -> dict:
         return {}
 
 
+def estimate_quality_size(preview: dict, quality_str: str) -> int:
+    try:
+        target_h = int(quality_str)
+    except Exception:
+        target_h = 720
+
+    duration = preview.get("duration") or 0
+    formats = preview.get("formats", [])
+    if not formats:
+        if duration > 0:
+            mbps = 1.8 if target_h >= 720 else 0.9
+            return int(duration * mbps * 1024 * 1024 / 8)
+        return int(preview.get("filesize") or preview.get("filesize_approx") or 0)
+
+    best_v_size = 0
+    best_a_size = 0
+    best_comb_size = 0
+
+    for f in formats:
+        h = f.get("height") or 0
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+
+        sz = f.get("filesize") or f.get("filesize_approx") or 0
+        if sz == 0 and duration > 0 and f.get("tbr"):
+            sz = int(f["tbr"] * 1024 / 8 * duration)
+
+        if h <= target_h:
+            if vcodec != "none" and acodec != "none":
+                if sz > best_comb_size:
+                    best_comb_size = sz
+            elif vcodec != "none" and acodec == "none":
+                if sz > best_v_size:
+                    best_v_size = sz
+            elif vcodec == "none" and acodec != "none":
+                if sz > best_a_size:
+                    best_a_size = sz
+
+    if best_v_size > 0:
+        return best_v_size + (best_a_size or 0)
+    if best_comb_size > 0:
+        return best_comb_size
+
+    if duration > 0:
+        mbps = 1.8 if target_h >= 720 else 0.9
+        return int(duration * mbps * 1024 * 1024 / 8)
+
+    return 0
+
+
 def detect_download_service(url: str) -> tuple[str, str]:
     try:
         host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
@@ -744,7 +871,7 @@ async def register_user(user_id: int, name: str = "", username: str = ""):
                     VALUES ($1, $2, $3, $4, 0.0, 0, 0.0, NOW())
                     ON CONFLICT (user_id) DO UPDATE SET
                         name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
-                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.name END,
+                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END,
                         last_activity_at = NOW();
                 """, user_id, name, username, today)
         except Exception:
@@ -764,7 +891,8 @@ async def register_user(user_id: int, name: str = "", username: str = ""):
             "today_mb": 0.0,
             "max_video": None,
             "last_request_at": None,
-            "last_request_file_id": None
+            "last_request_file_id": None,
+            "is_banned": False
         }
         save_backup_stats(stats)
     else:
@@ -855,7 +983,8 @@ async def get_user_stat(user_id: int) -> dict | None:
                            CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
                            max_vid_date,
                            last_request_at,
-                           last_request_file_id
+                           last_request_file_id,
+                           COALESCE(is_banned, FALSE) as is_banned
                     FROM user_stats
                     WHERE user_id = $1;
                 """, user_id)
@@ -884,7 +1013,8 @@ async def get_user_stat(user_id: int) -> dict | None:
         "max_vid_size_mb": float(mv.get("size_mb") or 0.0),
         "max_vid_date": mv.get("date"),
         "last_request_at": u.get("last_request_at"),
-        "last_request_file_id": u.get("last_request_file_id")
+        "last_request_file_id": u.get("last_request_file_id"),
+        "is_banned": bool(u.get("is_banned", False))
     }
 
 
@@ -1352,6 +1482,7 @@ def get_admin_panel_keyboard():
     builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
     builder.button(text="🔎 جستجوی کاربر", callback_data="admin_user_search")
     builder.button(text="👥 کاربران فعال", callback_data="admin_active_users")
+    builder.button(text="🚫 مدیریت مسدودیت (بن/آن‌بن)", callback_data="admin_ban_menu")
     builder.button(text="🔴 بستن پنل", callback_data="admin_close")
     builder.adjust(1)
     return builder.as_markup()
@@ -1559,6 +1690,9 @@ async def clear_tracked_settings_message(chat_id: int, state: FSMContext):
 @dp.message(CommandStart(), StateFilter("*"))
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     u = message.from_user
+    if await is_user_banned(u.id):
+        return await message.answer("⛔️ حساب کاربری شما توسط مدیریت مسدود شده است.")
+
     await clear_tracked_settings_message(message.chat.id, state)
     await register_user(u.id, u.full_name or "", u.username or "")
 
@@ -1603,10 +1737,12 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
 
 @dp.message(F.text == "🚀 آپدیت‌های اخیر", StateFilter("*"))
 async def show_changelog_message(message: aiotypes.Message):
+    if await is_user_banned(message.from_user.id):
+        return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه 2.4.4)</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.4.7)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن.\n\n"
+        "⚡️ <b>بهبود دانلود یوتیوب:</b> رفع مشکل و تفکیک دقیق کیفیت‌های 720p و 480p.\n\n"
         "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
         "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
         "</blockquote>"
@@ -1618,9 +1754,9 @@ async def show_changelog_message(message: aiotypes.Message):
 async def show_changelog_handler(callback: aiotypes.CallbackQuery):
     await callback.answer()
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه 2.4.4)</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.4.7)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن.\n\n"
+        "⚡️ <b>بهبود دانلود یوتیوب:</b> رفع مشکل و تفکیک دقیق کیفیت‌های 720p و 480p.\n\n"
         "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
         "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
         "</blockquote>"
@@ -1631,9 +1767,14 @@ async def show_changelog_handler(callback: aiotypes.CallbackQuery):
 @dp.message(F.text == "📊 حساب و آمار من", StateFilter("*"))
 @dp.callback_query(F.data == "show_my_stats", StateFilter("*"))
 async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
-    await state.clear()
     user_id = event.from_user.id
+    if await is_user_banned(user_id):
+        txt = "⛔️ حساب کاربری شما مسدود شده است."
+        if isinstance(event, aiotypes.CallbackQuery):
+            return await event.answer(txt, show_alert=True)
+        return await event.answer(txt)
 
+    await state.clear()
     stats_chat_id = event.message.chat.id if isinstance(event, aiotypes.CallbackQuery) else event.chat.id
     previous_msg_id = LAST_STATS_MESSAGES.get(user_id)
     if previous_msg_id:
@@ -1711,8 +1852,11 @@ URL_REGEX = re.compile(r'(https?://[^\s]+)')
 
 @dp.message(F.text.regexp(URL_REGEX), StateFilter("*"))
 async def handle_url_message(message: aiotypes.Message, state: FSMContext):
-    await clear_tracked_settings_message(message.chat.id, state)
     u = message.from_user
+    if await is_user_banned(u.id):
+        return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
+
+    await clear_tracked_settings_message(message.chat.id, state)
     await register_user(u.id, u.full_name or "", u.username or "")
 
     match = URL_REGEX.search(message.text)
@@ -1776,6 +1920,9 @@ async def cancel_url_dl(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("ytdl:"), StateFilter("*"))
 async def process_ytdl_download(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود شده است.", show_alert=True)
+
     await callback.answer()
     _, token, quality = callback.data.split(":")
     item = URL_DOWNLOADS.get(token)
@@ -1835,9 +1982,10 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     )
 
     preview = await get_url_preview_info(url)
-    estimated_size = int(preview.get("filesize") or preview.get("filesize_approx") or 0)
+    estimated_size = estimate_quality_size(preview, quality)
     title = preview.get("title") or ""
-    if estimated_size > MAX_FILE_SIZE:
+
+    if estimated_size > MAX_FILE_SIZE and estimated_size > 0:
         lower_kb = None
         if str(quality) != "480":
             lower_kb = InlineKeyboardBuilder()
@@ -1854,21 +2002,23 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         )
         return
 
+    size_display = f"{estimated_size/(1024*1024):.1f} مگابایت" if estimated_size > 0 else "در حال محاسبه..."
     await status_msg.edit_text(
         f"{service_icon} <b>{html.escape(service_name)}</b>\n"
         f"🎬 <b>{html.escape(title[:90]) if title else 'ویدیو'}</b>\n"
-        f"📦 حجم تقریبی: <b>{estimated_size/(1024*1024):.1f} مگابایت</b>\n"
-        f"🎯 کیفیت: <b>{quality}p</b>\n\n"
-        f"⏳ حالا دارم دانلودش می‌کنم...",
+        f"📦 حجم تقریبی: <b>{size_display}</b>\n"
+        f"🎯 کیفیت انتخابی: <b>{quality}p</b>\n\n"
+        f"⏳ حالا دارم با کیفیت {quality}p دانلودش می‌کنم...",
         parse_mode="HTML"
     )
 
-    fmt_selector = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+    fmt_selector = f"bv*[height<={quality}]+ba/b[height<={quality}]/best"
     cmd = [
         "yt-dlp",
         "--no-playlist",
         "--merge-output-format", "mp4",
         "-f", fmt_selector,
+        "-S", f"res:{quality},fps",
         "--max-filesize", "300M",
         "--extractor-args", "youtube:player_client=android,web"
     ]
@@ -1973,6 +2123,9 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("compress_from_dl:"), StateFilter("*"))
 async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود شده است.", show_alert=True)
+
     await callback.answer()
     token = callback.data.split(":")[1]
     saved_req = USER_REQUESTS.get(f"dl_msg_{token}")
@@ -2038,6 +2191,136 @@ async def close_admin_panel(callback: aiotypes.CallbackQuery, state: FSMContext)
     await callback.message.delete()
 
 
+@dp.callback_query(F.data == "admin_ban_menu", StateFilter("*"))
+async def admin_ban_menu_handler(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await callback.answer()
+
+    b = InlineKeyboardBuilder()
+    b.button(text="🚫 مسدود کردن (بن با آیدی)", callback_data="admin_prompt_ban")
+    b.button(text="✅ رفع مسدودیت (آن‌بن با آیدی)", callback_data="admin_prompt_unban")
+    b.button(text="📋 لیست کاربران مسدود", callback_data="admin_banned_list")
+    b.button(text="🔴 برگشت به پنل", callback_data="admin_back_main")
+    b.adjust(1)
+
+    await callback.message.edit_text(
+        "🚫 <b>مدیریت کاربران مسدود (Ban / Unban)</b>\n\n"
+        "یکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=b.as_markup(),
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data == "admin_prompt_ban", StateFilter("*"))
+async def admin_prompt_ban_handler(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
+
+    await callback.message.edit_text(
+        "🚫 <b>مسدودسازی کاربر</b>\n\n"
+        "آیدی عددی کاربر مورد نظر را برای مسدود کردن بفرستید:",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_ban_id)
+
+
+@dp.message(AdminMessageState.waiting_for_ban_id, F.chat.id == ADMIN_ID)
+async def process_ban_input(message: aiotypes.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        return await message.answer("لطفاً فقط آیدی عددی انگلیسی بفرستید:")
+    target_id = int(text)
+    if target_id == ADMIN_ID:
+        return await message.answer("❌ نمی‌توانید ادمین اصلی را مسدود کنید!")
+
+    await set_user_ban_status(target_id, True)
+    await state.clear()
+    await message.answer(f"✅ کاربر <code>{target_id}</code> با موفقیت مسدود (بن) شد.", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "admin_prompt_unban", StateFilter("*"))
+async def admin_prompt_unban_handler(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
+
+    await callback.message.edit_text(
+        "✅ <b>رفع مسدودیت کاربر</b>\n\n"
+        "آیدی عددی کاربر مورد نظر را برای رفع مسدودیت بفرستید:",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_unban_id)
+
+
+@dp.message(AdminMessageState.waiting_for_unban_id, F.chat.id == ADMIN_ID)
+async def process_unban_input(message: aiotypes.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        return await message.answer("لطفاً فقط آیدی عددی انگلیسی بفرستید:")
+    target_id = int(text)
+
+    await set_user_ban_status(target_id, False)
+    await state.clear()
+    await message.answer(f"✅ کاربر <code>{target_id}</code> با موفقیت آزاد (آن‌بن) شد.", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "admin_banned_list", StateFilter("*"))
+async def admin_banned_list_handler(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    banned = await get_banned_users()
+    b = InlineKeyboardBuilder()
+
+    if not banned:
+        b.button(text="🔴 برگشت", callback_data="admin_ban_menu")
+        return await callback.message.edit_text("📋 در حال حاضر هیچ کاربری مسدود نیست.", reply_markup=b.as_markup())
+
+    lines = ["🚫 <b>لیست کاربران مسدود شده:</b>\n"]
+    for idx, u in enumerate(banned[:30], 1):
+        name = html.escape((u.get("name") or "کاربر")[:20])
+        uname = html.escape(u.get("username") or "ندارد")
+        uid = u["user_id"]
+        lines.append(f"{idx}. {name} | {uname} | <code>{uid}</code>")
+        b.button(text=f"آن‌بن {name[:12]}", callback_data=f"adm_quick_unban:{uid}")
+
+    b.button(text="🔴 برگشت به پنل مسدودیت", callback_data="admin_ban_menu")
+    b.adjust(1)
+    await callback.message.edit_text("\n".join(lines), reply_markup=b.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_quick_unban:"), StateFilter("*"))
+async def admin_quick_unban_handler(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    target_id = int(callback.data.split(":")[1])
+    await set_user_ban_status(target_id, False)
+    await callback.answer(f"کاربر {target_id} رفع مسدودیت شد.", show_alert=True)
+    await admin_banned_list_handler(callback)
+
+
+@dp.callback_query(F.data.startswith("adm_toggle_ban:"), StateFilter("*"))
+async def admin_toggle_ban_handler(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    target_id = int(callback.data.split(":")[1])
+    current_status = await is_user_banned(target_id)
+    new_status = not current_status
+    await set_user_ban_status(target_id, new_status)
+    status_msg = "مسدود شد 🚫" if new_status else "رفع مسدودیت شد ✅"
+    await callback.answer(f"کاربر {target_id} {status_msg}", show_alert=True)
+    await show_single_user_stat(callback)
+
+
 @dp.callback_query(F.data == "admin_top_users", StateFilter("*"))
 async def show_top_users(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -2081,12 +2364,14 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
     cost = float(u.get("total_cost") or 0.0)
     jobs = int(u.get("total_jobs") or 0)
     today_mb = float(u.get("today_mb") or 0.0)
+    banned_status = "مسدود 🚫" if u.get("is_banned") else "فعال 🟢"
 
     text = (
         f"👤 <b>آمار مصرف کاربر:</b>\n\n"
         f"<blockquote>▫️ نام: {safe_name}\n"
         f"▫️ یوزرنیم: {uname}\n"
         f"▫️ آیدی عددی: <code>{target_uid}</code>\n"
+        f"▫️ وضعیت حساب: <b>{banned_status}</b>\n"
         f"▫️ کل هزینه: <b>${cost:.5f}</b>\n"
         f"▫️ تعداد فایل‌ها: {jobs}\n"
         f"▫️ مصرف امروز: {today_mb:.1f} مگابایت</blockquote>"
@@ -2104,6 +2389,8 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
         )
         builder.button(text="🎬 دانلود ویدیو", callback_data=f"adm_get_vid:{target_uid}")
 
+    ban_btn_text = "✅ رفع مسدودیت (آن‌بن)" if u.get("is_banned") else "🚫 مسدود کردن (بن)"
+    builder.button(text=ban_btn_text, callback_data=f"adm_toggle_ban:{target_uid}")
     builder.button(text="🔴 برگشت به لیست", callback_data="admin_top_users")
     builder.adjust(1)
 
@@ -2334,7 +2621,7 @@ async def process_admin_user_search(message: aiotypes.Message, state: FSMContext
         try:
             async with DB_POOL.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT user_id, COALESCE(name,'کاربر') AS name, COALESCE(username,'') AS username, last_activity_at
+                    SELECT user_id, COALESCE(name,'کاربر') AS name, COALESCE(username,'') AS username, last_activity_at, COALESCE(is_banned, FALSE) as is_banned
                     FROM user_stats
                     WHERE CAST(user_id AS TEXT) ILIKE $1 OR name ILIKE $1 OR username ILIKE $1
                     ORDER BY last_activity_at DESC NULLS LAST LIMIT 30;
@@ -2345,7 +2632,13 @@ async def process_admin_user_search(message: aiotypes.Message, state: FSMContext
     else:
         for uid, data in load_backup_stats().get("users", {}).items():
             if q in str(uid).lower() or q in str(data.get("name", "")).lower() or q in str(data.get("username", "")).lower().lstrip("@"):
-                matches.append({"user_id": int(uid), "name": data.get("name") or "کاربر", "username": data.get("username") or "", "last_activity_at": data.get("last_activity_at")})
+                matches.append({
+                    "user_id": int(uid),
+                    "name": data.get("name") or "کاربر",
+                    "username": data.get("username") or "",
+                    "last_activity_at": data.get("last_activity_at"),
+                    "is_banned": bool(data.get("is_banned", False))
+                })
         matches.sort(key=lambda x: (x.get("last_activity_at") or "", int(x["user_id"])), reverse=True)
         matches = matches[:30]
     await state.clear()
@@ -2356,8 +2649,9 @@ async def process_admin_user_search(message: aiotypes.Message, state: FSMContext
     for u in matches:
         name = html.escape((u.get("name") or "کاربر")[:24])
         uname = html.escape(u.get("username") or "ندارد")
-        lines.append(f"👤 {name} | {uname} | <code>{u['user_id']}</code>")
-        b.button(text=f"✉️ {name[:18]} | {u['user_id']}", callback_data=f"admin_pick_user:{u['user_id']}")
+        ban_lbl = " [🚫 مسدود]" if u.get("is_banned") else ""
+        lines.append(f"👤 {name} | {uname} | <code>{u['user_id']}</code>{ban_lbl}")
+        b.button(text=f"✉️ {name[:16]} | {u['user_id']}", callback_data=f"admin_pick_user:{u['user_id']}")
     b.button(text="🔴 برگشت به پنل", callback_data="admin_back_main")
     b.adjust(1)
     await message.answer("\n".join(lines), reply_markup=b.as_markup(), parse_mode="HTML")
@@ -2524,8 +2818,14 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
 @dp.message(F.text == "⚙️ تنظیمات", StateFilter("*"))
 @dp.callback_query(F.data == "open_settings", StateFilter("*"))
 async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
-    await clear_tracked_settings_message(event.chat.id, state)
     user_id = event.from_user.id
+    if await is_user_banned(user_id):
+        txt = "⛔️ حساب کاربری شما مسدود شده است."
+        if isinstance(event, aiotypes.CallbackQuery):
+            return await event.answer(txt, show_alert=True)
+        return await event.answer(txt)
+
+    await clear_tracked_settings_message(event.chat.id, state)
     u = event.from_user
     await register_user(user_id, u.full_name or "", u.username or "")
 
@@ -2546,6 +2846,8 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, s
 @dp.callback_query(F.data == "toggle_details", StateFilter("*"))
 async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
+    if await is_user_banned(user_id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     current_status = await get_user_show_details(user_id)
     await set_user_show_details(user_id, not current_status)
     await callback.answer("نوع نمایش گزارش عوض شد.", show_alert=False)
@@ -2558,6 +2860,8 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data == "open_default_settings", StateFilter("*"))
 async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    if await is_user_banned(user_id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     user_cfg = await get_user_default_cfg(user_id)
     text = (
         "🎬 <b>تنظیمات همیشگی پردازش ویدیو</b>\n\n"
@@ -2575,6 +2879,8 @@ async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMCont
 
 @dp.callback_query(F.data.startswith("defcfg:"), StateFilter("*"))
 async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     cfg = decode_cfg(callback.data[7:])
     await set_user_default_cfg(callback.from_user.id, cfg)
     await callback.answer("ذخیره شد.", show_alert=False)
@@ -2619,6 +2925,12 @@ async def no_action_callback(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data == "start_support", StateFilter("*"))
 async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
     u = event.from_user
+    if await is_user_banned(u.id):
+        txt = "⛔️ حساب کاربری شما مسدود شده است."
+        if isinstance(event, aiotypes.CallbackQuery):
+            return await event.answer(txt, show_alert=True)
+        return await event.answer(txt)
+
     await register_user(u.id, u.full_name or "", u.username or "")
 
     cancel_b = InlineKeyboardBuilder()
@@ -2648,6 +2960,10 @@ async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
 async def forward_support_message(message: aiotypes.Message, state: FSMContext):
     u = message.from_user
     user_id = u.id
+    if await is_user_banned(user_id):
+        await state.clear()
+        return await message.answer("⛔️ حساب کاربری شما مسدود است.")
+
     name = html.escape(u.full_name or "بدون نام")
     username = f"@{html.escape(u.username)}" if u.username else "ندارد"
     await register_user(user_id, u.full_name or "", u.username or "")
@@ -2792,8 +3108,11 @@ def detect_file_extension(message: aiotypes.Message | None) -> str:
 
 @dp.message(F.video | F.document | F.audio | F.voice, StateFilter("*"))
 async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
-    await clear_tracked_settings_message(message.chat.id, state)
     u = message.from_user
+    if await is_user_banned(u.id):
+        return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
+
+    await clear_tracked_settings_message(message.chat.id, state)
     await register_user(u.id, u.full_name or "", u.username or "")
 
     file_obj = None
@@ -3028,6 +3347,9 @@ async def stop_processing(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data.startswith("arun:"), StateFilter("*"))
 async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     global QUEUE_COUNTER
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
+
     try:
         await callback.answer()
     except Exception:
@@ -3108,6 +3430,9 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("quick_audio:"), StateFilter("*"))
 async def quick_audio_extract(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
+
     await callback.answer("دارم ردیفش می‌کنم...")
     job_id = callback.data.split(":", 1)[1]
     req = USER_REQUESTS.get(job_id)
@@ -3175,6 +3500,9 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data.startswith("run:"), StateFilter("*"))
 async def enqueue_task(callback: aiotypes.CallbackQuery):
     global QUEUE_COUNTER
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
+
     try:
         await callback.answer()
     except Exception:
