@@ -36,6 +36,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 DATABASE_URL = os.getenv("DATABASE_URL")
+COOKIES_FILE = "cookies.txt"
 
 TEHRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 FFMPEG_BIN = "ffmpeg"
@@ -661,8 +662,13 @@ def set_cached_download(url: str, quality: str, file_id: str, size_bytes: int, w
 async def get_url_preview_info(url: str) -> dict:
     cmd = [
         "yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist",
-        "--no-warnings", url
+        "--no-warnings",
+        "--extractor-args", "youtube:player_client=android,web"
     ]
+    if os.path.exists(COOKIES_FILE):
+        cmd.extend(["--cookies", COOKIES_FILE])
+    cmd.append(url)
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -738,7 +744,7 @@ async def register_user(user_id: int, name: str = "", username: str = ""):
                     VALUES ($1, $2, $3, $4, 0.0, 0, 0.0, NOW())
                     ON CONFLICT (user_id) DO UPDATE SET
                         name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE user_stats.name END,
-                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.username END,
+                        username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE user_stats.name END,
                         last_activity_at = NOW();
                 """, user_id, name, username, today)
         except Exception:
@@ -1864,9 +1870,11 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         "--merge-output-format", "mp4",
         "-f", fmt_selector,
         "--max-filesize", "300M",
-        "-o", out_template,
-        url
+        "--extractor-args", "youtube:player_client=android,web"
     ]
+    if os.path.exists(COOKIES_FILE):
+        cmd.extend(["--cookies", COOKIES_FILE])
+    cmd.extend(["-o", out_template, url])
 
     downloaded_file = None
     thumb_path = None
