@@ -13,8 +13,6 @@ import logging
 import datetime
 import traceback
 import subprocess
-import hashlib
-import urllib.parse
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F, types as aiotypes
@@ -30,13 +28,12 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.4.7"
+BOT_VERSION = "2.5.0"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 DATABASE_URL = os.getenv("DATABASE_URL")
-COOKIES_FILE = "cookies.txt"
 
 TEHRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 FFMPEG_BIN = "ffmpeg"
@@ -44,8 +41,6 @@ MAX_FILE_SIZE = 300 * 1024 * 1024
 DOWNLOAD_DIR = "downloads"
 PREFS_FILE = "user_prefs.json"
 BACKUP_STATS_FILE = "user_stats.json"
-DOWNLOAD_CACHE_FILE = "download_cache.json"
-DOWNLOAD_CACHE_TTL = 24 * 60 * 60
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required.")
@@ -80,7 +75,6 @@ pyro = PyroClient(
 SUPPORT_MAP = {}
 FAILED_JOBS = {}
 USER_REQUESTS = {}
-URL_DOWNLOADS = {}
 ACTIVE_PROCESSES = {}
 RUNNING_TASKS = {}
 ADMIN_MEDIA_STORE = {}
@@ -671,165 +665,6 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
         }
 
     save_backup_stats(stats)
-
-
-def _cache_key(url: str, quality: str) -> str:
-    normalized = url.strip()
-    return hashlib.sha256(f"{normalized}|{quality}".encode("utf-8")).hexdigest()
-
-
-def load_download_cache() -> dict:
-    if not os.path.exists(DOWNLOAD_CACHE_FILE):
-        return {}
-    try:
-        with open(DOWNLOAD_CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def save_download_cache(cache: dict):
-    try:
-        with open(DOWNLOAD_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning(f"Download cache save error: {e}")
-
-
-def cleanup_download_cache():
-    cache = load_download_cache()
-    now = time.time()
-    changed = False
-    for key in list(cache.keys()):
-        ts = float(cache[key].get("cached_at", 0) or 0)
-        if now - ts >= DOWNLOAD_CACHE_TTL:
-            cache.pop(key, None)
-            changed = True
-    if changed:
-        save_download_cache(cache)
-
-
-def get_cached_download(url: str, quality: str) -> dict | None:
-    cleanup_download_cache()
-    item = load_download_cache().get(_cache_key(url, quality))
-    if not item:
-        return None
-    if not item.get("file_id"):
-        return None
-    return item
-
-
-def set_cached_download(url: str, quality: str, file_id: str, size_bytes: int, width: int, height: int, duration: int, title: str = ""):
-    cache = load_download_cache()
-    cache[_cache_key(url, quality)] = {
-        "url": url,
-        "quality": quality,
-        "file_id": file_id,
-        "size_bytes": size_bytes,
-        "width": width,
-        "height": height,
-        "duration": duration,
-        "title": title[:200],
-        "cached_at": time.time()
-    }
-    save_download_cache(cache)
-
-
-async def get_url_preview_info(url: str) -> dict:
-    cmd = [
-        "yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist",
-        "--no-warnings",
-        "--extractor-args", "youtube:player_client=android,web"
-    ]
-    if os.path.exists(COOKIES_FILE):
-        cmd.extend(["--cookies", COOKIES_FILE])
-    cmd.append(url)
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=25)
-        if proc.returncode != 0:
-            return {}
-        data = json.loads(stdout.decode(errors="ignore"))
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        logging.warning(f"URL preview info error: {e}")
-        return {}
-
-
-def estimate_quality_size(preview: dict, quality_str: str) -> int:
-    try:
-        target_h = int(quality_str)
-    except Exception:
-        target_h = 720
-
-    duration = preview.get("duration") or 0
-    formats = preview.get("formats", [])
-    if not formats:
-        if duration > 0:
-            mbps = 1.8 if target_h >= 720 else 0.9
-            return int(duration * mbps * 1024 * 1024 / 8)
-        return int(preview.get("filesize") or preview.get("filesize_approx") or 0)
-
-    best_v_size = 0
-    best_a_size = 0
-    best_comb_size = 0
-
-    for f in formats:
-        h = f.get("height") or 0
-        vcodec = f.get("vcodec", "none")
-        acodec = f.get("acodec", "none")
-
-        sz = f.get("filesize") or f.get("filesize_approx") or 0
-        if sz == 0 and duration > 0 and f.get("tbr"):
-            sz = int(f["tbr"] * 1024 / 8 * duration)
-
-        if h <= target_h:
-            if vcodec != "none" and acodec != "none":
-                if sz > best_comb_size:
-                    best_comb_size = sz
-            elif vcodec != "none" and acodec == "none":
-                if sz > best_v_size:
-                    best_v_size = sz
-            elif vcodec == "none" and acodec != "none":
-                if sz > best_a_size:
-                    best_a_size = sz
-
-    if best_v_size > 0:
-        return best_v_size + (best_a_size or 0)
-    if best_comb_size > 0:
-        return best_comb_size
-
-    if duration > 0:
-        mbps = 1.8 if target_h >= 720 else 0.9
-        return int(duration * mbps * 1024 * 1024 / 8)
-
-    return 0
-
-
-def detect_download_service(url: str) -> tuple[str, str]:
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
-    except Exception:
-        host = ""
-    if host.startswith("www."):
-        host = host[4:]
-    if "youtube.com" in host or host == "youtu.be":
-        return "YouTube", "▶️"
-    if "instagram.com" in host:
-        return "Instagram", "📸"
-    if "tiktok.com" in host:
-        return "TikTok", "🎵"
-    if host in {"x.com", "twitter.com"} or host.endswith(".x.com"):
-        return "X", "𝕏"
-    if "facebook.com" in host or host == "fb.watch":
-        return "Facebook", "📘"
-    if host == "t.me" or host.endswith(".telegram.me") or host == "telegram.me":
-        return "Telegram", "✈️"
-    return "", ""
 
 
 TIPS = [
@@ -1562,33 +1397,35 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
 def build_default_config_keyboard(cfg: dict):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
-    res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
+    res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], crf_val, mute_val, speed_val, fmt_val = (
+        cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
+    )
 
-    b.button(text="🎬 تبدیل ویدیو" + (" ✅" if mode == "video" else ""), callback_data="defcfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
-    b.button(text="🎵 کشیدن صدا" + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎬 تبدیل ویدیو" + (" ✅" if mode == "video" else ""), callback_data="defcfg:" + encode_cfg("video", res, codec, crf_val, mute_val, speed_val, "orig" if fmt_val not in ["mp4", "mkv", "mov"] else fmt_val))
+    b.button(text="🎵 کشیدن صدا" + (" ✅" if mode == "audio" else ""), callback_data="defcfg:" + encode_cfg("audio", res, codec, crf_val, mute_val, speed_val, "mp3" if fmt_val in ["orig", "mp4", "mkv", "mov"] else fmt_val))
 
     if mode == "video":
-        b.button(text="📁 مثل فایل اصلی" + (" ✅" if fmt == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
-        b.button(text="MP4" + (" ✅" if fmt == "mp4" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mp4"))
-        b.button(text="MKV" + (" ✅" if fmt == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mkv"))
-        b.button(text="MOV" + (" ✅" if fmt == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "mov"))
+        b.button(text="📁 مثل فایل اصلی" + (" ✅" if fmt_val == "orig" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, mute_val, speed_val, "orig"))
+        b.button(text="MP4" + (" ✅" if fmt_val == "mp4" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, mute_val, speed_val, "mp4"))
+        b.button(text="MKV" + (" ✅" if fmt_val == "mkv" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, mute_val, speed_val, "mkv"))
+        b.button(text="MOV" + (" ✅" if fmt_val == "mov" else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, mute_val, speed_val, "mov"))
 
         for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
-            b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="defcfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
+            b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="defcfg:" + encode_cfg(mode, r_k, codec, crf_val, mute_val, speed_val, fmt_val))
 
-        b.button(text="H.264 (عادی و سازگار)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
-        b.button(text="H.265 (خیلی کم‌حجم‌تر)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
+        b.button(text="H.264 (عادی و سازگار)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf_val, mute_val, speed_val, fmt_val))
+        b.button(text="H.265 (خیلی کم‌حجم‌تر)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf_val, mute_val, speed_val, fmt_val))
 
         for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل و خوب"), ("heavy", "کاهش زیاد (خیلی فشرده)")]:
-            b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
+            b.button(text=c_t + (" ✅" if crf_val == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute_val, speed_val, fmt_val))
 
-        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
+        b.button(text="🔇 صدا: قطع" if mute_val else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, not mute_val, speed_val, fmt_val))
     else:
         for af_k, af_t in [("mp3", "MP3"), ("wav", "WAV"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
-            b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
+            b.button(text=af_t + (" ✅" if fmt_val == af_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, mute_val, speed_val, af_k))
 
     for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
-        b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, fmt))
+        b.button(text=s_t + (" ✅" if speed_val == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf_val, mute_val, s_k, fmt_val))
 
     b.button(text="🔴 برگشت به تنظیمات", callback_data="back_to_settings")
 
@@ -1721,11 +1558,11 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
 
     welcome_text = (
         f"👋 <b>سلام {user_name}، خیلی خوش اومدی!</b>\n\n"
-        f"<blockquote>با این بات می‌تونی ویدیوهات و ویس‌هات رو کم‌حجم کنی یا خیلی راحت از یوتیوب و اینستاگرام ویدیو بگیری.\n\n"
-        f"⚠️ چون بات کاملاً رایگانه، سرعت پردازش ویدیوها پایین‌تر از بقیه بات‌هاست.</blockquote>\n\n"
+        f"<blockquote>با این بات می‌تونی ویدیوهات و ویس‌هات رو کم‌حجم کنی یا صدای ویدیوها رو استخراج کنی.\n\n"
+        f"⚠️ چون بات کاملاً رایگانه، سرعت پردازش ویدیوها متناسب با منابع سرور است.</blockquote>\n\n"
         f"<blockquote>🤖 <b>نسخه ربات:</b> {BOT_VERSION}\n"
         f"⏰ <b>ساعت و تاریخ:</b> {time_str} | {date_str}</blockquote>\n\n"
-        f"برای شروع یکی از گزینه‌ها رو بزن:"
+        f"برای شروع یکی از گزینه‌ها رو بزن یا فایل ویدیویی بفرست:"
     )
 
     await message.answer(
@@ -1740,11 +1577,11 @@ async def show_changelog_message(message: aiotypes.Message):
     if await is_user_banned(message.from_user.id):
         return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه 2.4.7)</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.5.0)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>بهبود دانلود یوتیوب:</b> رفع مشکل و تفکیک دقیق کیفیت‌های 720p و 480p.\n\n"
+        "⚡️ <b>بهینه‌سازی کلی و تمرکز روی فشرده‌سازی:</b> حذف بخش‌های اضافی برای سرعت و پایداری بالاتر پردازش‌ها.\n\n"
         "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
+        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها مرتب شدند."
         "</blockquote>"
     )
     await message.answer(changelog_text, parse_mode="HTML")
@@ -1754,11 +1591,11 @@ async def show_changelog_message(message: aiotypes.Message):
 async def show_changelog_handler(callback: aiotypes.CallbackQuery):
     await callback.answer()
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه 2.4.7)</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.5.0)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>بهبود دانلود یوتیوب:</b> رفع مشکل و تفکیک دقیق کیفیت‌های 720p و 480p.\n\n"
+        "⚡️ <b>بهینه‌سازی کلی و تمرکز روی فشرده‌سازی:</b> حذف بخش‌های اضافی برای سرعت و پایداری بالاتر پردازش‌ها.\n\n"
         "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
+        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها مرتب شدند."
         "</blockquote>"
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
@@ -1846,321 +1683,6 @@ async def close_tip_handler(callback: aiotypes.CallbackQuery):
         await callback.message.delete()
     except Exception:
         pass
-
-
-URL_REGEX = re.compile(r'(https?://[^\s]+)')
-
-@dp.message(F.text.regexp(URL_REGEX), StateFilter("*"))
-async def handle_url_message(message: aiotypes.Message, state: FSMContext):
-    u = message.from_user
-    if await is_user_banned(u.id):
-        return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
-
-    await clear_tracked_settings_message(message.chat.id, state)
-    await register_user(u.id, u.full_name or "", u.username or "")
-
-    match = URL_REGEX.search(message.text)
-    if not match:
-        return
-    url = match.group(1).strip()
-
-    try:
-        parsed_host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
-        if parsed_host.startswith("www."):
-            parsed_host = parsed_host[4:]
-    except Exception:
-        parsed_host = ""
-
-    if parsed_host in {"t.me", "telegram.me"} or parsed_host.endswith(".telegram.me"):
-        await message.reply(
-            "✈️ <b>این لینک مربوط به تلگرامه</b> و لینک مستقیم ویدیوی قابل دانلود نیست.\n\n"
-            "📌 لینک گروه یا کانال مثل <code>t.me/...</code> رو نمی‌تونم به عنوان ویدیوی اینترنتی پردازش کنم.",
-            parse_mode="HTML"
-        )
-        return
-
-    token = uuid.uuid4().hex[:8]
-    if len(URL_DOWNLOADS) > 300:
-        URL_DOWNLOADS.pop(next(iter(URL_DOWNLOADS)))
-
-    URL_DOWNLOADS[token] = {
-        "url": url,
-        "user_id": u.id,
-        "name": u.full_name or "کاربر",
-        "username": f"@{u.username}" if u.username else "ندارد",
-        "chat_id": message.chat.id
-    }
-
-    service_name, service_icon = detect_download_service(url)
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎬 کیفیت 720p", callback_data=f"ytdl:{token}:720")
-    builder.button(text="📱 کیفیت 480p", callback_data=f"ytdl:{token}:480")
-    builder.button(text="🔴 پشیمون شدم", callback_data=f"ytdl_cancel:{token}")
-    builder.adjust(2, 1)
-
-    await message.reply(
-        f"{service_icon} <b>سرویس تشخیص داده شد: {html.escape(service_name)}</b>\n"
-        "<blockquote>قبل از دانلود، اطلاعات و حجم تقریبی ویدیو بررسی میشه تا انتخاب کیفیت راحت‌تر باشه.</blockquote>\n\n"
-        "چه کیفیتی برات دانلود کنم؟",
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML"
-    )
-
-
-@dp.callback_query(F.data.startswith("ytdl_cancel:"), StateFilter("*"))
-async def cancel_url_dl(callback: aiotypes.CallbackQuery):
-    token = callback.data.split(":")[1]
-    URL_DOWNLOADS.pop(token, None)
-    await callback.answer("بی‌خیال شدیم.")
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-
-@dp.callback_query(F.data.startswith("ytdl:"), StateFilter("*"))
-async def process_ytdl_download(callback: aiotypes.CallbackQuery):
-    if await is_user_banned(callback.from_user.id):
-        return await callback.answer("⛔️ حساب شما مسدود شده است.", show_alert=True)
-
-    await callback.answer()
-    _, token, quality = callback.data.split(":")
-    item = URL_DOWNLOADS.get(token)
-
-    if not item:
-        return await callback.message.edit_text("❌ لینک نامعتبره یا وقتش تموم شده.")
-
-    url = item["url"]
-    chat_id = item["chat_id"]
-    user_id = item["user_id"]
-    user_name = item["name"]
-    username = item["username"]
-    await touch_last_video_request(user_id, user_name, username.lstrip("@"), None)
-    service_name, service_icon = detect_download_service(url)
-    await create_video_request(
-        user_id, token=token, request_type="url_download", status="requested",
-        chat_id=chat_id, source_url=url, service=service_name or "نامشخص", config={"quality": str(quality)}
-    )
-    out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
-    cached = get_cached_download(url, quality)
-    if cached:
-        try:
-            status_msg = await callback.message.edit_text(
-                f"⚡️ <b>این لینک قبلاً دانلود شده بود.</b>\n📦 از کش ۲۴ ساعته استفاده می‌کنم؛ دانلود دوباره لازم نیست.",
-                parse_mode="HTML"
-            )
-            sent_video = await bot.send_video(
-                chat_id=chat_id,
-                video=cached["file_id"],
-                duration=int(cached.get("duration") or 0),
-                width=int(cached.get("width") or 1280),
-                height=int(cached.get("height") or 720),
-                caption=(
-                    f"{service_icon} <b>ویدیو از کش ارسال شد</b>\n\n"
-                    f"<blockquote>📦 حجم: <b>{float(cached.get('size_bytes', 0))/(1024*1024):.2f} مگابایت</b>\n"
-                    f"⏳ کش تا ۲۴ ساعت نگه داشته میشه.</blockquote>"
-                ),
-                reply_markup=PyroInlineKeyboardMarkup([[PyroInlineKeyboardButton(
-                    "🗜 همین رو کم‌حجم کن", callback_data=f"compress_from_dl:{token}"
-                )]])
-            )
-            USER_REQUESTS[f"dl_msg_{token}"] = {
-                "file_id": sent_video.video.file_id, "user_id": user_id, "name": user_name,
-                "chat_id": chat_id, "message_id": sent_video.id, "max_res": int(quality),
-                "width": int(cached.get("width") or 1280), "height": int(cached.get("height") or 720),
-                "file_size": int(cached.get("size_bytes") or 0)
-            }
-            await update_video_request_status(token=token, status="completed")
-            await status_msg.delete()
-            return
-        except Exception:
-            pass
-
-    status_msg = await callback.message.edit_text(
-        f"{service_icon} <b>{html.escape(service_name)}</b>\n⏳ دارم اطلاعات و حجم تقریبی ویدیو رو بررسی می‌کنم...",
-        parse_mode="HTML"
-    )
-
-    preview = await get_url_preview_info(url)
-    estimated_size = estimate_quality_size(preview, quality)
-    title = preview.get("title") or ""
-
-    if estimated_size > MAX_FILE_SIZE and estimated_size > 0:
-        lower_kb = None
-        if str(quality) != "480":
-            lower_kb = InlineKeyboardBuilder()
-            lower_kb.button(text="📱 انتخاب 480p", callback_data=f"ytdl:{token}:480")
-            lower_kb = lower_kb.as_markup()
-        await status_msg.edit_text(
-            f"⚠️ <b>این کیفیت برای دانلود خیلی حجیمه.</b>\n\n"
-            f"<blockquote>🎬 سرویس: <b>{html.escape(service_name)}</b>\n"
-            f"📦 حجم تقریبی: <b>{estimated_size/(1024*1024):.0f} مگابایت</b>\n"
-            f"🎯 کیفیت انتخابی: <b>{quality}p</b></blockquote>\n\n"
-            f"برای پردازش باید کیفیت پایین‌تر انتخاب کنی.",
-            reply_markup=lower_kb,
-            parse_mode="HTML"
-        )
-        return
-
-    size_display = f"{estimated_size/(1024*1024):.1f} مگابایت" if estimated_size > 0 else "در حال محاسبه..."
-    await status_msg.edit_text(
-        f"{service_icon} <b>{html.escape(service_name)}</b>\n"
-        f"🎬 <b>{html.escape(title[:90]) if title else 'ویدیو'}</b>\n"
-        f"📦 حجم تقریبی: <b>{size_display}</b>\n"
-        f"🎯 کیفیت انتخابی: <b>{quality}p</b>\n\n"
-        f"⏳ حالا دارم با کیفیت {quality}p دانلودش می‌کنم...",
-        parse_mode="HTML"
-    )
-
-    fmt_selector = f"bv*[height<={quality}]+ba/b[height<={quality}]/best"
-    cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "--merge-output-format", "mp4",
-        "-f", fmt_selector,
-        "-S", f"res:{quality},fps",
-        "--max-filesize", "300M",
-        "--extractor-args", "youtube:player_client=android,web"
-    ]
-    if os.path.exists(COOKIES_FILE):
-        cmd.extend(["--cookies", COOKIES_FILE])
-    cmd.extend(["-o", out_template, url])
-
-    downloaded_file = None
-    thumb_path = None
-
-    try:
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            err_text = stderr.decode(errors="ignore")
-            raise RuntimeError(f"yt-dlp failure: {err_text[-400:]}")
-
-        for fname in os.listdir(DOWNLOAD_DIR):
-            if fname.startswith(f"ytdl_{token}") and not fname.endswith((".part", ".ytdl")):
-                downloaded_file = os.path.join(DOWNLOAD_DIR, fname)
-                break
-
-        if not downloaded_file or not os.path.exists(downloaded_file):
-            raise RuntimeError("File not found or exceeded size limit")
-
-        fsize = os.path.getsize(downloaded_file)
-        if fsize > MAX_FILE_SIZE:
-            if os.path.exists(downloaded_file):
-                os.remove(downloaded_file)
-            return await status_msg.edit_text(SIZE_LIMIT_EXCEEDED_MSG)
-
-        meta = await get_media_meta(downloaded_file)
-        thumb_path = os.path.join(DOWNLOAD_DIR, f"ytdl_thumb_{token}.jpg")
-        await generate_thumbnail(downloaded_file, thumb_path, meta["duration"])
-
-        await status_msg.edit_text("📤 دانلود فایل تموم شد؛ الان برات می‌فرستم...")
-
-        sent_video = await pyro.send_video(
-            chat_id=chat_id,
-            video=downloaded_file,
-            duration=meta["duration"],
-            width=meta["width"],
-            height=meta["height"],
-            thumb=thumb_path if (os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100) else None,
-            caption=(
-                f"🎬 <b>ویدیوت با موفقیت دانلود شد</b>\n\n"
-                f"<blockquote>📁 فرمت: <b>MP4</b>\n"
-                f"📦 حجم: <b>{fsize / (1024*1024):.2f} مگابایت</b>\n"
-                f"📐 ابعاد: <b>{meta['width']}x{meta['height']} ({quality}p)</b></blockquote>"
-            ),
-            reply_markup=PyroInlineKeyboardMarkup([[
-                PyroInlineKeyboardButton("🗜 همین رو کم‌حجم کن", callback_data=f"compress_from_dl:{token}")
-            ]])
-        )
-
-        await status_msg.delete()
-
-        USER_REQUESTS[f"dl_msg_{token}"] = {
-            "file_id": sent_video.video.file_id,
-            "user_id": user_id,
-            "name": user_name,
-            "chat_id": chat_id,
-            "message_id": sent_video.id,
-            "max_res": int(quality),
-            "width": meta["width"],
-            "height": meta["height"],
-            "file_size": fsize
-        }
-        await update_video_request_status(token=token, status="completed")
-        set_cached_download(url, quality, sent_video.video.file_id, fsize, meta["width"], meta["height"], meta["duration"], title)
-
-    except Exception as e:
-        tb = traceback.format_exc()
-        logging.error(f"yt-dlp error: {tb}")
-
-        admin_alert = (
-            f"🚨 <b>خطای دانلود لینک (yt-dlp)</b>\n\n"
-            f"<blockquote>👤 <b>کاربر:</b> {html.escape(user_name)} (<code>{user_id}</code>)\n"
-            f"🔗 <b>یوزرنیم:</b> {html.escape(username)}\n"
-            f"🌐 <b>لینک:</b> <code>{html.escape(url[:150])}</code></blockquote>\n\n"
-            f"📋 <b>لاگ مشکل:</b>\n<pre>{html.escape(str(e)[:500])}</pre>"
-        )
-        try:
-            await bot.send_message(chat_id=ADMIN_ID, text=admin_alert, parse_mode="HTML")
-        except Exception:
-            pass
-
-        try:
-            await status_msg.edit_text("⚠️ نتونستم ویدیو رو دانلود کنم. ممکنه لینک خصوصی باشه، خراب باشه یا سرورش محدودیت گذاشته باشه.", parse_mode="HTML")
-        except Exception:
-            pass
-
-    finally:
-        for p in (downloaded_file, thumb_path):
-            if p and os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-
-
-@dp.callback_query(F.data.startswith("compress_from_dl:"), StateFilter("*"))
-async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
-    if await is_user_banned(callback.from_user.id):
-        return await callback.answer("⛔️ حساب شما مسدود شده است.", show_alert=True)
-
-    await callback.answer()
-    token = callback.data.split(":")[1]
-    saved_req = USER_REQUESTS.get(f"dl_msg_{token}")
-
-    if not saved_req:
-        return await callback.message.reply("❌ اطلاعات این ویدیو پریده. لطفاً یه بار دیگه بفرستش.")
-
-    user_default_cfg = await get_user_default_cfg(callback.from_user.id)
-    default_cfg = dict(user_default_cfg)
-    dl_max_res = saved_req.get("max_res", 720)
-
-    w = saved_req.get("width", 1280)
-    h = saved_req.get("height", 720)
-    res_str = f"{w}x{h} ({dl_max_res}p)"
-
-    sent_panel = await callback.message.reply(
-        f"⚙️ <b>تنظیمات کم‌حجم کردن ویدیو</b>\n\n"
-        f"<blockquote>📁 فرمت: <b>MP4</b>\n"
-        f"📐 کیفیت فایل: <b>{res_str}</b></blockquote>\n\n"
-        f"هرجور دوست داری تنظیمش کن و بعد دکمه شروع رو بزن:",
-        reply_markup=build_config_keyboard(default_cfg, orig_ext="mp4", max_res=dl_max_res),
-        parse_mode="HTML"
-    )
-
-    if len(VIDEO_META_CACHE) > 500:
-        VIDEO_META_CACHE.pop(next(iter(VIDEO_META_CACHE)))
-    VIDEO_META_CACHE[sent_panel.message_id] = {
-        "orig_ext": "mp4",
-        "max_res": dl_max_res,
-        "res_str": res_str,
-        "media_type": "video",
-        "file_size": saved_req.get("file_size", 0),
-        "file_id": saved_req["file_id"],
-        "orig_msg_id": saved_req.get("message_id", sent_panel.message_id)
-    }
 
 
 @dp.message(Command("admin"), StateFilter("*"))
@@ -4229,18 +3751,8 @@ async def process_job(job: dict):
                     pass
 
 
-async def download_cache_cleanup_worker():
-    while True:
-        try:
-            cleanup_download_cache()
-        except Exception:
-            pass
-        await asyncio.sleep(60 * 60)
-
-
 async def main():
     clean_residual_downloads()
-    cleanup_download_cache()
     init_prefs_cache()
     await init_db()
     await migrate_prefs_to_db()
@@ -4254,7 +3766,6 @@ async def main():
 
     asyncio.create_task(queue_worker())
     asyncio.create_task(midnight_reset_worker())
-    asyncio.create_task(download_cache_cleanup_worker())
     logging.info(f"Bot v{BOT_VERSION} is now online.")
 
     try:
