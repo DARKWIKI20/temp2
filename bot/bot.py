@@ -1397,7 +1397,7 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
 def build_default_config_keyboard(cfg: dict):
     b = InlineKeyboardBuilder()
     mode = cfg["mode"]
-    res, codec, crf, mute, speed, fmt = cfg["res"], cfg["codec"], crf_val, mute_val, speed_val, fmt_val = (
+    res, codec, crf_val, mute_val, speed_val, fmt_val = (
         cfg["res"], cfg["codec"], cfg["crf"], cfg["mute"], cfg["speed"], cfg["fmt"]
     )
 
@@ -1527,11 +1527,18 @@ async def clear_tracked_settings_message(chat_id: int, state: FSMContext):
 @dp.message(CommandStart(), StateFilter("*"))
 async def start_handler(message: aiotypes.Message, state: FSMContext):
     u = message.from_user
-    if await is_user_banned(u.id):
-        return await message.answer("⛔️ حساب کاربری شما توسط مدیریت مسدود شده است.")
-
     await clear_tracked_settings_message(message.chat.id, state)
     await register_user(u.id, u.full_name or "", u.username or "")
+
+    if await is_user_banned(u.id):
+        b = ReplyKeyboardBuilder()
+        b.button(text="📞 پشتیبانی")
+        return await message.answer(
+            "⛔️ <b>حساب کاربری شما توسط مدیریت مسدود شده است.</b>\n\n"
+            "شما در حال حاضر فقط امکان ارتباط با بخش پشتیبانی را دارید.",
+            reply_markup=b.as_markup(resize_keyboard=True),
+            parse_mode="HTML"
+        )
 
     time_str, date_str = get_tehran_datetime()
     user_name = html.escape(u.full_name or "کاربر")
@@ -1589,6 +1596,8 @@ async def show_changelog_message(message: aiotypes.Message):
 
 @dp.callback_query(F.data == "show_changelog", StateFilter("*"))
 async def show_changelog_handler(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     await callback.answer()
     changelog_text = (
         "🚀 <b>تغییرات جدید بات (نسخه 2.5.0)</b>\n\n"
@@ -2447,12 +2456,6 @@ async def no_action_callback(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data == "start_support", StateFilter("*"))
 async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, state: FSMContext):
     u = event.from_user
-    if await is_user_banned(u.id):
-        txt = "⛔️ حساب کاربری شما مسدود شده است."
-        if isinstance(event, aiotypes.CallbackQuery):
-            return await event.answer(txt, show_alert=True)
-        return await event.answer(txt)
-
     await register_user(u.id, u.full_name or "", u.username or "")
 
     cancel_b = InlineKeyboardBuilder()
@@ -2482,16 +2485,14 @@ async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
 async def forward_support_message(message: aiotypes.Message, state: FSMContext):
     u = message.from_user
     user_id = u.id
-    if await is_user_banned(user_id):
-        await state.clear()
-        return await message.answer("⛔️ حساب کاربری شما مسدود است.")
 
     name = html.escape(u.full_name or "بدون نام")
     username = f"@{html.escape(u.username)}" if u.username else "ندارد"
     await register_user(user_id, u.full_name or "", u.username or "")
 
+    banned_tag = " ⛔️ [کاربر مسدود شده]" if await is_user_banned(user_id) else ""
     admin_header = (
-        f"📩 <b>پیام جدید از بخش پشتیبانی</b>\n\n"
+        f"📩 <b>پیام جدید از بخش پشتیبانی{banned_tag}</b>\n\n"
         f"<blockquote>👤 نام: {name}\n"
         f"🆔 آیدی: <code>{user_id}</code>\n"
         f"🔗 یوزرنیم: {username}</blockquote>"
@@ -2632,7 +2633,7 @@ def detect_file_extension(message: aiotypes.Message | None) -> str:
 async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
     u = message.from_user
     if await is_user_banned(u.id):
-        return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
+        return await message.answer("⛔️ حساب کاربری شما مسدود شده است و امکان پردازش فایل را ندارید. فقط می‌توانید از بخش پشتیبانی استفاده کنید.")
 
     await clear_tracked_settings_message(message.chat.id, state)
     await register_user(u.id, u.full_name or "", u.username or "")
@@ -2796,6 +2797,8 @@ async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("acfg:"), StateFilter("*"))
 async def update_audio_settings(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     try:
         await callback.answer()
     except Exception:
@@ -2809,6 +2812,8 @@ async def update_audio_settings(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cfg:"), StateFilter("*"))
 async def update_settings(callback: aiotypes.CallbackQuery):
+    if await is_user_banned(callback.from_user.id):
+        return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     try:
         await callback.answer()
     except Exception:
