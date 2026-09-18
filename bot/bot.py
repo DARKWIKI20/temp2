@@ -53,7 +53,7 @@ if not ADMIN_ID:
 if not API_ID or not API_HASH:
     raise RuntimeError("API_ID and API_HASH environment variables are required.")
 
-SIZE_LIMIT_EXCEEDED_MSG = "⚠️ به خاطر حفظ کیفیت بات و رایگان بودنش حجم‌های بالاتر از ۳۰۰ مگ قبول نمیشه"
+SIZE_LIMIT_EXCEEDED_MSG = "⚠️ به خاطر حفظ کیفیت بات و رایگان بودنش حجم‌های بالاتر از ۳۰۰ مگ قبول نمیشه."
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -362,7 +362,7 @@ async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tup
 
 
 async def touch_last_video_request(user_id: int, name: str = "", username: str = "", file_id: str | None = None):
-    """ثبت زمان آخرین درخواست واقعی ویدیو برای مرتب‌سازی لیست ادمین"""
+    """ثبت زمان آخرین درخواست واقعی ویدیو برای مرتب‌سازی لیست ادمین."""
     now = datetime.datetime.now(TEHRAN_TZ).replace(tzinfo=None)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -414,7 +414,7 @@ async def touch_last_video_request(user_id: int, name: str = "", username: str =
 
 
 async def get_users_for_admin_message() -> list[dict]:
-    """همه کاربران مرتب‌شده از آخرین درخواست ویدیو به قدیمی‌ترین"""
+    """همه کاربران، مرتب‌شده از آخرین درخواست ویدیو به قدیمی‌ترین."""
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as conn:
@@ -485,7 +485,7 @@ def format_admin_user_list_text(users: list[dict], page: int) -> str:
     lines = [
         "👤 <b>انتخاب کاربر برای ارسال پیام</b>",
         f"<blockquote>👥 کل کاربران: <b>{len(users)}</b> نفر\n"
-        "🕒 ترتیب لیست آخرین درخواست ویدیو اول</blockquote>",
+        "🕒 ترتیب لیست: آخرین درخواست ویدیو اول</blockquote>",
         "",
     ]
 
@@ -663,7 +663,7 @@ def set_cached_download(url: str, quality: str, file_id: str, size_bytes: int, w
 
 
 async def get_url_preview_info(url: str) -> dict:
-    """اطلاعات اولیه لینک را قبل از دانلود می‌گیرد تا حجم تقریبی مشخص شود"""
+    """اطلاعات اولیه لینک را قبل از دانلود می‌گیرد تا حجم تقریبی مشخص شود."""
     cmd = [
         "yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist",
         "--no-warnings", url
@@ -699,15 +699,17 @@ def detect_download_service(url: str) -> tuple[str, str]:
         return "X", "𝕏"
     if "facebook.com" in host or host == "fb.watch":
         return "Facebook", "📘"
-    return "سرویس ویدیو", "🌐"
+    if host == "t.me" or host.endswith(".telegram.me") or host == "telegram.me":
+        return "Telegram", "✈️"
+    return "", ""
 
 
 TIPS = [
-    "💡 <b>ترفند</b> برای کاهش حجم بیشتر H265 را امتحان کن معمولا نسبت حجم به کیفیت بهتری می‌دهد",
-    "💡 <b>ترفند</b> اگر حجم خیلی مهم است کیفیت 480p معمولا برای موبایل کاملا مناسب است",
-    "💡 <b>ترفند</b> ویدیوهای پرنویز و پرتحرک سخت‌تر فشرده می‌شوند و ممکن است حجم نهایی بیشتر بماند",
-    "💡 <b>ترفند</b> برای فایل صوتی بیت‌ریت 64k یا 96k برای استفاده معمولی حجم را خیلی پایین می‌آورد",
-    "💡 <b>ترفند</b> اگر فایل از قبل فشرده باشد کم کردن دوباره حجم ممکن است تفاوت زیادی ایجاد نکند",
+    "💡 <b>ترفند:</b> برای کاهش حجم بیشتر، H.265 را امتحان کن؛ معمولاً نسبت حجم به کیفیت بهتری می‌دهد.",
+    "💡 <b>ترفند:</b> اگر حجم خیلی مهم است، کیفیت 480p معمولاً برای موبایل کاملاً مناسب است.",
+    "💡 <b>ترفند:</b> ویدیوهای پرنویز و پرتحرک سخت‌تر فشرده می‌شوند و ممکن است حجم نهایی بیشتر بماند.",
+    "💡 <b>ترفند:</b> برای فایل صوتی، بیت‌ریت 64k یا 96k برای استفاده معمولی حجم را خیلی پایین می‌آورد.",
+    "💡 <b>ترفند:</b> اگر فایل از قبل فشرده باشد، کم کردن دوباره حجم ممکن است تفاوت زیادی ایجاد نکند.",
 ]
 
 
@@ -1246,7 +1248,7 @@ async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: fl
         return -1, "cancelled"
 
     if proc.returncode == -9:
-        err_output = "سیستم به خاطر کمبود رم مجبور شد پردازش رو ببنده"
+        err_output = "سیستم به خاطر کمبود رم مجبور شد پردازش رو ببنده."
     else:
         err_output = "\n".join(last_lines[-5:]) if last_lines else ""
 
@@ -1270,8 +1272,8 @@ def get_main_reply_keyboard(user_id: int):
 async def get_settings_inline_keyboard(user_id: int):
     show_details = await get_user_show_details(user_id)
     builder = InlineKeyboardBuilder()
-    toggle_text = "گزارش مشخصات کامل ✅" if show_details else "گزارش مشخصات خلاصه 📉"
-    action_text = "تغییر به خلاصه" if show_details else "تغییر به کامل"
+    toggle_text = "گزارش مشخصات: کامل ✅" if show_details else "گزارش مشخصات: خلاصه 📉"
+    action_text = "تغییر به: خلاصه" if show_details else "تغییر به: کامل"
     builder.button(text=toggle_text, callback_data="none")
     builder.button(text=f"🔄 {action_text}", callback_data="toggle_details")
     builder.button(text="🎬 تنظیمات پیش‌فرض ویدیو", callback_data="open_default_settings")
@@ -1331,7 +1333,7 @@ def format_active_users_text(data: dict) -> str:
         "👥 <b>کاربران فعال</b>",
         f"<blockquote>🟢 امروز: <b>{counts['امروز']}</b> نفر\n📅 ۷ روز اخیر: <b>{counts['هفته']}</b> نفر\n🗓 ۳۰ روز اخیر: <b>{counts['ماه']}</b> نفر</blockquote>",
         "",
-        "🕒 <b>آخرین فعالیت کاربران</b>"
+        "🕒 <b>آخرین فعالیت کاربران:</b>"
     ]
     for i, u in enumerate(data["users"][:20], 1):
         name = html.escape((u.get("name") or "کاربر")[:22])
@@ -1390,7 +1392,7 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
         cfg["res"] = "orig"
 
     b.button(text="🎬 کم‌حجم کردن ویدیو" + (" ✅" if mode == "video" else ""), callback_data="cfg:" + encode_cfg("video", res, codec, crf, mute, speed, "orig" if fmt not in ["mp4", "mkv", "mov"] else fmt))
-    b.button(text="🎵 کشیدن صدای ویدیو MP3" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
+    b.button(text="🎵 کشیدن صدای ویدیو (MP3)" + (" ✅" if mode == "audio" else ""), callback_data="cfg:" + encode_cfg("audio", res, codec, crf, mute, speed, "mp3" if fmt in ["orig", "mp4", "mkv", "mov"] else fmt))
 
     if mode == "video":
         b.button(text=f"📁 مثل فایل اصلی ({orig_ext.upper()})" + (" ✅" if fmt == "orig" else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, "orig"))
@@ -1401,18 +1403,18 @@ def build_config_keyboard(cfg: dict, orig_ext: str = "mp4", max_res: int = 1080)
         for r_k, r_t in res_options:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="cfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
-        b.button(text="H264 عادی و سازگار" + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
-        b.button(text="H265 خیلی کم‌حجم‌تر" + (" ✅" if codec == "h265" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
+        b.button(text="H.264 (عادی و سازگار)" + (" ✅" if codec == "h264" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
+        b.button(text="H.265 (خیلی کم‌حجم‌تر)" + (" ✅" if codec == "h265" else ""), callback_data="cfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
 
-        for c_k, c_t in [("light", "کاهش کم کیفیت بالا"), ("medium", "متعادل و خوب"), ("heavy", "کاهش زیاد خیلی فشرده")]:
+        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل و خوب"), ("heavy", "کاهش زیاد (خیلی فشرده)")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
 
-        b.button(text="🔇 صدا قطع" if mute else "🔊 صدا وصل", callback_data="cfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
+        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="cfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
     else:
         for af_k, af_t in [("mp3", "MP3"), ("wav", "WAV"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
             b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
 
-    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱۵ برابر"), ("2.0", "۲ برابر")]:
+    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="cfg:" + encode_cfg(mode, res, codec, crf, mute, s_k, fmt))
 
     start_phrase = random.choice(START_PHRASES)
@@ -1443,18 +1445,18 @@ def build_default_config_keyboard(cfg: dict):
         for r_k, r_t in [("orig", "کیفیت اصلی"), ("1080", "1080p"), ("720", "720p"), ("480", "480p")]:
             b.button(text=r_t + (" ✅" if res == r_k else ""), callback_data="defcfg:" + encode_cfg(mode, r_k, codec, crf, mute, speed, fmt))
 
-        b.button(text="H264 عادی و سازگار" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
-        b.button(text="H265 خیلی کم‌حجم‌تر" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
+        b.button(text="H.264 (عادی و سازگار)" + (" ✅" if codec == "h264" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h264", crf, mute, speed, fmt))
+        b.button(text="H.265 (خیلی کم‌حجم‌تر)" + (" ✅" if codec == "h265" else ""), callback_data="defcfg:" + encode_cfg(mode, res, "h265", crf, mute, speed, fmt))
 
-        for c_k, c_t in [("light", "کاهش کم کیفیت بالا"), ("medium", "متعادل و خوب"), ("heavy", "کاهش زیاد خیلی فشرده")]:
+        for c_k, c_t in [("light", "کاهش کم (کیفیت بالا)"), ("medium", "متعادل و خوب"), ("heavy", "کاهش زیاد (خیلی فشرده)")]:
             b.button(text=c_t + (" ✅" if crf == c_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, c_k, mute, speed, fmt))
 
-        b.button(text="🔇 صدا قطع" if mute else "🔊 صدا وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
+        b.button(text="🔇 صدا: قطع" if mute else "🔊 صدا: وصل", callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, not mute, speed, fmt))
     else:
         for af_k, af_t in [("mp3", "MP3"), ("wav", "WAV"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
             b.button(text=af_t + (" ✅" if fmt == af_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, af_k))
 
-    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱۵ برابر"), ("2.0", "۲ برابر")]:
+    for s_k, s_t in [("1.0", "سرعت ۱x"), ("1.5", "۱.۵ برابر"), ("2.0", "۲ برابر")]:
         b.button(text=s_t + (" ✅" if speed == s_k else ""), callback_data="defcfg:" + encode_cfg(mode, res, codec, crf, mute, speed, fmt))
 
     b.button(text="🔴 برگشت به تنظیمات", callback_data="back_to_settings")
@@ -1468,11 +1470,11 @@ def build_default_config_keyboard(cfg: dict):
 
 def build_audio_keyboard(bitrate="96k", fmt="mp3", speed="1.0"):
     b = InlineKeyboardBuilder()
-    for br, txt in [("128k", "کیفیت بالا 128"), ("96k", "متعادل 96"), ("64k", "کاهش زیاد 64"), ("48k", "فوق‌العاده کم‌حجم 48")]:
+    for br, txt in [("128k", "کیفیت بالا (128)"), ("96k", "متعادل (96)"), ("64k", "کاهش زیاد (64)"), ("48k", "فوق‌العاده کم‌حجم (48)")]:
         b.button(text=txt + (" ✅" if bitrate == br else ""), callback_data=f"acfg:{br}:{fmt}:{speed}")
     for af, txt in [("mp3", "MP3"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
         b.button(text=txt + (" ✅" if fmt == af else ""), callback_data=f"acfg:{bitrate}:{af}:{speed}")
-    for sp, txt in [("1.0", "سرعت ۱x"), ("1.25", "۱۲۵x"), ("1.5", "۱۵x")]:
+    for sp, txt in [("1.0", "سرعت ۱x"), ("1.25", "۱.۲۵x"), ("1.5", "۱.۵x")]:
         b.button(text=txt + (" ✅" if speed == sp else ""), callback_data=f"acfg:{bitrate}:{fmt}:{sp}")
 
     start_phrase = random.choice(START_PHRASES)
@@ -1569,7 +1571,7 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
     premium = "بله ✅" if getattr(u, "is_premium", False) else "خیر"
 
     start_log = (
-        "🚀 <b>start جدید</b>\n\n"
+        "🚀 <b>/start جدید</b>\n\n"
         f"<blockquote>👤 نام: {user_name}\n"
         f"🆔 آیدی: <code>{u.id}</code>\n"
         f"🔗 یوزرنیم: {username}\n"
@@ -1603,11 +1605,11 @@ async def start_handler(message: aiotypes.Message, state: FSMContext):
 @dp.message(F.text == "🚀 آپدیت‌های اخیر", StateFilter("*"))
 async def show_changelog_message(message: aiotypes.Message):
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات نسخه 244</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.4.4)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>سرعت بالاتر تبدیل</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن\n\n"
-        "🗜 <b>فشرده‌سازی خفن‌تر</b> کیفیت و حجم بهینه‌تر شدن اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه تو تنظیمات بذارش روی <b>H265</b>\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه"
+        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن.\n\n"
+        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
+        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
         "</blockquote>"
     )
     await message.answer(changelog_text, parse_mode="HTML")
@@ -1617,11 +1619,11 @@ async def show_changelog_message(message: aiotypes.Message):
 async def show_changelog_handler(callback: aiotypes.CallbackQuery):
     await callback.answer()
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات نسخه 244</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه 2.4.4)</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>سرعت بالاتر تبدیل</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن\n\n"
-        "🗜 <b>فشرده‌سازی خفن‌تر</b> کیفیت و حجم بهینه‌تر شدن اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه تو تنظیمات بذارش روی <b>H265</b>\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه"
+        "⚡️ <b>سرعت بالاتر تبدیل:</b> موتور پردازش رو دستکاری کردیم تا فایل‌ها یه کوچولو سریع‌تر از قبل آماده بشن.\n\n"
+        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
+        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها رو جمع‌وجور کردیم تا کار باهاشون راحت باشه."
         "</blockquote>"
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
@@ -1651,7 +1653,7 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
         progress_bar_str = generate_progress_bar(pct)
         rem_mb_str = f"{max(0.0, limit - today_mb):.1f} مگابایت از {limit} مگابایت"
     else:
-        progress_bar_str = "████████████ نامحدود"
+        progress_bar_str = "[████████████] نامحدود"
         rem_mb_str = "نامحدود"
 
     text = (
@@ -1677,11 +1679,11 @@ async def send_compression_guide(callback: aiotypes.CallbackQuery):
     await callback.answer()
     guide_text = (
         "💡 <b>چندتا نکته درباره کم‌حجم کردن فایل‌ها</b>\n\n"
-        "<blockquote>▫️ <b>ویدیوهای شبکه‌های اجتماعی</b> فیلم‌هایی که از اینستا و تلگرام میاری قبلا تا ته فشرده شدن واسه همین شاید حجمشون خیلی فرقی نکنه\n"
-        "▫️ <b>تصاویر شلوغ یا پرحرکت</b> برفک نویز و صحنه‌های پر از تکون باعث میشن حجم فایل بیشتر بمونه</blockquote>\n\n"
-        "🛠 <b>ترفندهای به‌دردبخور</b>\n"
-        "<blockquote>۱ برای ویدیو انکودر <b>H265</b> رو انتخاب کن بدون اینکه کیفیت حسابی بیاد پایین حجم رو حسابی کم می‌کنه\n"
-        "۲ برای صدا هم بیت‌ریت <b>96k</b> یا <b>64k</b> کاملا کارت رو راه میندازه و حجم رو به شدت کم می‌کنه</blockquote>"
+        "<blockquote>▫️ <b>ویدیوهای شبکه‌های اجتماعی:</b> فیلم‌هایی که از اینستا و تلگرام میاری قبلاً تا ته فشرده شدن، واسه همین شاید حجمشون خیلی فرقی نکنه.\n"
+        "▫️ <b>تصاویر شلوغ یا پرحرکت:</b> برفک، نویز و صحنه‌های پر از تکون باعث میشن حجم فایل بیشتر بمونه.</blockquote>\n\n"
+        "🛠 <b>ترفندهای به‌دردبخور:</b>\n"
+        "<blockquote>۱. برای ویدیو، انکودر <b>H.265</b> رو انتخاب کن؛ بدون اینکه کیفیت حسابی بیاد پایین، حجم رو حسابی کم می‌کنه.\n"
+        "۲. برای صدا هم بیت‌ریت <b>96k</b> یا <b>64k</b> کاملاً کارت رو راه میندازه و حجم رو به شدت کم می‌کنه.</blockquote>"
     )
     await callback.message.answer(guide_text, parse_mode="HTML")
 
@@ -1720,6 +1722,22 @@ async def handle_url_message(message: aiotypes.Message, state: FSMContext):
         return
     url = match.group(1).strip()
 
+    # لینک‌های تلگرام (گروه، کانال و یوزرنیم) لینک دانلود ویدیو نیستند.
+    try:
+        parsed_host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+        if parsed_host.startswith("www."):
+            parsed_host = parsed_host[4:]
+    except Exception:
+        parsed_host = ""
+
+    if parsed_host in {"t.me", "telegram.me"} or parsed_host.endswith(".telegram.me"):
+        await message.reply(
+            "✈️ <b>این لینک مربوط به تلگرامه</b> و لینک مستقیم ویدیوی قابل دانلود نیست.\n\n"
+            "📌 لینک گروه یا کانال مثل <code>t.me/...</code> رو نمی‌تونم به عنوان ویدیوی اینترنتی پردازش کنم.",
+            parse_mode="HTML"
+        )
+        return
+
     token = uuid.uuid4().hex[:8]
     if len(URL_DOWNLOADS) > 300:
         URL_DOWNLOADS.pop(next(iter(URL_DOWNLOADS)))
@@ -1741,8 +1759,8 @@ async def handle_url_message(message: aiotypes.Message, state: FSMContext):
 
     await message.reply(
         f"{service_icon} <b>سرویس تشخیص داده شد: {html.escape(service_name)}</b>\n"
-        "<blockquote>قبل از دانلود اطلاعات و حجم تقریبی ویدیو بررسی میشه تا انتخاب کیفیت راحت‌تر باشه</blockquote>\n\n"
-        "چه کیفیتی برات دانلود کنم",
+        "<blockquote>قبل از دانلود، اطلاعات و حجم تقریبی ویدیو بررسی میشه تا انتخاب کیفیت راحت‌تر باشه.</blockquote>\n\n"
+        "چه کیفیتی برات دانلود کنم؟",
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
@@ -1752,7 +1770,7 @@ async def handle_url_message(message: aiotypes.Message, state: FSMContext):
 async def cancel_url_dl(callback: aiotypes.CallbackQuery):
     token = callback.data.split(":")[1]
     URL_DOWNLOADS.pop(token, None)
-    await callback.answer("بی‌خیال شدیم")
+    await callback.answer("بی‌خیال شدیم.")
     try:
         await callback.message.delete()
     except Exception:
@@ -1766,7 +1784,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     item = URL_DOWNLOADS.get(token)
 
     if not item:
-        return await callback.message.edit_text("❌ لینک نامعتبره یا وقتش تموم شده")
+        return await callback.message.edit_text("❌ لینک نامعتبره یا وقتش تموم شده.")
 
     url = item["url"]
     chat_id = item["chat_id"]
@@ -1774,13 +1792,12 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     user_name = item["name"]
     username = item["username"]
     await touch_last_video_request(user_id, user_name, username.lstrip("@"), None)
+    service_name, service_icon = detect_download_service(url)
     await create_video_request(
         user_id, token=token, request_type="url_download", status="requested",
-        chat_id=chat_id, source_url=url, service=service_name, config={"quality": str(quality)}
+        chat_id=chat_id, source_url=url, service=service_name or "نامشخص", config={"quality": str(quality)}
     )
     out_template = os.path.join(DOWNLOAD_DIR, f"ytdl_{token}.%(ext)s")
-
-    service_name, service_icon = detect_download_service(url)
     cached = get_cached_download(url, quality)
     if cached:
         try:
@@ -1890,7 +1907,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
         thumb_path = os.path.join(DOWNLOAD_DIR, f"ytdl_thumb_{token}.jpg")
         await generate_thumbnail(downloaded_file, thumb_path, meta["duration"])
 
-        await status_msg.edit_text("📤 دانلود فایل تموم شد الان برات می‌فرستم")
+        await status_msg.edit_text("📤 دانلود فایل تموم شد؛ الان برات می‌فرستم...")
 
         sent_video = await pyro.send_video(
             chat_id=chat_id,
@@ -1943,7 +1960,7 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
             pass
 
         try:
-            await status_msg.edit_text("⚠️ نتونستم ویدیو رو دانلود کنم ممکنه لینک خصوصی باشه خراب باشه یا سرورش محدودیت گذاشته باشه", parse_mode="HTML")
+            await status_msg.edit_text("⚠️ نتونستم ویدیو رو دانلود کنم. ممکنه لینک خصوصی باشه، خراب باشه یا سرورش محدودیت گذاشته باشه.", parse_mode="HTML")
         except Exception:
             pass
 
@@ -1963,7 +1980,7 @@ async def open_compress_panel_for_downloaded(callback: aiotypes.CallbackQuery):
     saved_req = USER_REQUESTS.get(f"dl_msg_{token}")
 
     if not saved_req:
-        return await callback.message.reply("❌ اطلاعات این ویدیو پریده لطفا یه بار دیگه بفرستش")
+        return await callback.message.reply("❌ اطلاعات این ویدیو پریده. لطفاً یه بار دیگه بفرستش.")
 
     user_default_cfg = await get_user_default_cfg(callback.from_user.id)
     default_cfg = dict(user_default_cfg)
@@ -2031,10 +2048,10 @@ async def show_top_users(callback: aiotypes.CallbackQuery):
 
     top_users = await get_top_users(limit=10)
     if not top_users:
-        return await callback.message.answer("📊 فعلا کاربری ثبت نشده")
+        return await callback.message.answer("📊 فعلاً کاربری ثبت نشده.")
 
     builder = InlineKeyboardBuilder()
-    text_lines = ["🏆 <b>لیست کاربران پرمصرف</b>\n"]
+    text_lines = ["🏆 <b>لیست کاربران پرمصرف:</b>\n"]
 
     for idx, u in enumerate(top_users, start=1):
         safe_name = html.escape(u.get("name") or "کاربر")
@@ -2059,7 +2076,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 
     u = await get_user_stat(target_uid)
     if not u:
-        return await callback.message.answer("اطلاعات این کاربر پیدا نشد")
+        return await callback.message.answer("اطلاعات این کاربر پیدا نشد.")
 
     safe_name = html.escape(u.get("name") or "نامشخص")
     uname = f"@{html.escape(u['username'])}" if u.get("username") else "ندارد"
@@ -2099,12 +2116,12 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 async def send_max_consuming_video(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
-    await callback.answer("دارم ویدیو رو می‌فرستم")
+    await callback.answer("دارم ویدیو رو می‌فرستم...")
     target_uid = int(callback.data.split(":")[1])
 
     u = await get_user_stat(target_uid)
     if not u or not u.get("max_vid_file_id"):
-        return await callback.message.answer("ویدیویی برای این کاربر ذخیره نشده")
+        return await callback.message.answer("ویدیویی برای این کاربر ذخیره نشده.")
 
     cap = (
         f"🎬 <b>سنگین‌ترین فایل کاربر <code>{target_uid}</code></b>\n\n"
@@ -2171,7 +2188,7 @@ async def prompt_reset_quota(callback: aiotypes.CallbackQuery, state: FSMContext
 
     await callback.message.answer(
         "⚠️ <b>ریست کردن سهمیه مصرف روزانه</b>\n\n"
-        "<blockquote>اگه مطمئنی دقیقا این کلمه رو بفرست\n"
+        "<blockquote>اگه مطمئنی، دقیقاً این کلمه رو بفرست:\n"
         "<code>ریست کردن</code></blockquote>",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
@@ -2185,10 +2202,10 @@ async def process_reset_quota_confirmation(message: aiotypes.Message, state: FSM
     if text == "ریست کردن":
         await reset_all_daily_usage()
         await state.clear()
-        await message.answer("✅ سهمیه مصرف روزانه تمام کاربرا صفر شد", parse_mode="HTML")
+        await message.answer("✅ سهمیه مصرف روزانه تمام کاربرا صفر شد.", parse_mode="HTML")
     else:
         await state.clear()
-        await message.answer("❌ متن تأیید درست نبود عملیات لغو شد", parse_mode="HTML")
+        await message.answer("❌ متن تأیید درست نبود، عملیات لغو شد.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "set_lim_custom", StateFilter("*"))
@@ -2200,7 +2217,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
     cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        "✏️ مقدار سهمیه روزانه رو به <b>مگابایت MB</b> بنویس اگه می‌خوای نامحدود باشه <code>0</code> بفرست",
+        "✏️ مقدار سهمیه روزانه رو به <b>مگابایت (MB)</b> بنویس (اگه می‌خوای نامحدود باشه <code>0</code> بفرست):",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -2211,7 +2228,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
 async def process_custom_limit_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer("لطفا فقط عدد انگلیسی بفرست")
+        return await message.answer("لطفاً فقط عدد انگلیسی بفرست:")
 
     val = int(text)
     await set_daily_limit_mb(val)
@@ -2304,7 +2321,7 @@ async def admin_user_search_prompt(callback: aiotypes.CallbackQuery, state: FSMC
     b = InlineKeyboardBuilder()
     b.button(text="🔴 لغو", callback_data="cancel_admin_action")
     await callback.message.edit_text(
-        "🔎 <b>جستجوی کاربر</b>\\n\\nنام یوزرنیم یا آیدی عددی کاربر رو بفرست",
+        "🔎 <b>جستجوی کاربر</b>\\n\\nنام، یوزرنیم یا آیدی عددی کاربر رو بفرست:",
         reply_markup=b.as_markup(), parse_mode="HTML"
     )
     await state.set_state(AdminMessageState.waiting_for_user_search)
@@ -2314,7 +2331,7 @@ async def admin_user_search_prompt(callback: aiotypes.CallbackQuery, state: FSMC
 async def process_admin_user_search(message: aiotypes.Message, state: FSMContext):
     q = (message.text or "").strip().lower().lstrip("@")
     if not q:
-        return await message.answer("عبارت جستجو رو بفرست")
+        return await message.answer("عبارت جستجو رو بفرست:")
     matches = []
     if DB_POOL:
         try:
@@ -2336,7 +2353,7 @@ async def process_admin_user_search(message: aiotypes.Message, state: FSMContext
         matches = matches[:30]
     await state.clear()
     if not matches:
-        return await message.answer("❌ کاربری با این مشخصات پیدا نشد")
+        return await message.answer("❌ کاربری با این مشخصات پیدا نشد.")
     b = InlineKeyboardBuilder()
     lines = ["🔎 <b>نتیجه جستجو</b>", ""]
     for u in matches:
@@ -2422,7 +2439,7 @@ async def select_admin_message_user(callback: aiotypes.CallbackQuery, state: FSM
         f"<blockquote>👤 نام: {html.escape(user_name)}\n"
         f"🔗 یوزرنیم: {html.escape(username)}\n"
         f"🆔 آیدی: <code>{target_id}</code></blockquote>\n\n"
-        "حالا پیام یا فایلی که می‌خوای برای این کاربر بفرستی رو ارسال کن",
+        "حالا پیام یا فایلی که می‌خوای برای این کاربر بفرستی رو ارسال کن:",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -2451,7 +2468,7 @@ async def quick_reply_to_user(callback: aiotypes.CallbackQuery, state: FSMContex
 async def process_user_id_input(message: aiotypes.Message, state: FSMContext):
     text = message.text.strip() if message.text else ""
     if not text.isdigit():
-        return await message.answer("لطفا فقط آیدی عددی بفرست")
+        return await message.answer("لطفاً فقط آیدی عددی بفرست:")
 
     target_id = int(text)
     user_name = "نامشخص"
@@ -2487,11 +2504,11 @@ async def send_single_message_to_user(message: aiotypes.Message, state: FSMConte
     user_name = data.get("user_name", "کاربر")
 
     try:
-        await bot.send_message(chat_id=target_id, text="💬 <b>پیام از طرف پشتیبانی</b>", parse_mode="HTML")
+        await bot.send_message(chat_id=target_id, text="💬 <b>پیام از طرف پشتیبانی:</b>", parse_mode="HTML")
         await message.copy_to(chat_id=target_id)
         await message.answer(f"✅ پیام برای <b>{html.escape(user_name)}</b> (<code>{target_id}</code>) ارسال شد.", parse_mode="HTML")
     except TelegramForbiddenError:
-        await message.answer("❌ متأسفانه این کاربر بات رو بلاک کرده")
+        await message.answer("❌ متأسفانه این کاربر بات رو بلاک کرده.")
     except Exception as e:
         await message.answer(f"ارسال نشد، مشکل:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
@@ -2503,8 +2520,8 @@ async def cancel_admin_action(callback: aiotypes.CallbackQuery, state: FSMContex
     if callback.from_user.id != ADMIN_ID:
         return
     await state.clear()
-    await callback.answer("بی‌خیال شدیم")
-    await callback.message.edit_text("عملیات لغو شد")
+    await callback.answer("بی‌خیال شدیم.")
+    await callback.message.edit_text("عملیات لغو شد.")
 
 
 @dp.message(F.text == "⚙️ تنظیمات", StateFilter("*"))
@@ -2517,7 +2534,7 @@ async def show_settings_menu(event: aiotypes.Message | aiotypes.CallbackQuery, s
 
     text = (
         "⚙️ <b>تنظیمات بات</b>\n\n"
-        "<blockquote>اینجا می‌تونی مدل نمایش گزارش‌ها و تنظیمات پیش‌فرض تبدیل ویدیوها رو مشخص کنی</blockquote>"
+        "<blockquote>اینجا می‌تونی مدل نمایش گزارش‌ها و تنظیمات پیش‌فرض تبدیل ویدیوها رو مشخص کنی:</blockquote>"
     )
     kb = await get_settings_inline_keyboard(user_id)
     if isinstance(event, aiotypes.CallbackQuery):
@@ -2534,7 +2551,7 @@ async def toggle_settings_option(callback: aiotypes.CallbackQuery):
     user_id = callback.from_user.id
     current_status = await get_user_show_details(user_id)
     await set_user_show_details(user_id, not current_status)
-    await callback.answer("نوع نمایش گزارش عوض شد", show_alert=False)
+    await callback.answer("نوع نمایش گزارش عوض شد.", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=await get_settings_inline_keyboard(user_id))
     except TelegramBadRequest:
@@ -2547,8 +2564,8 @@ async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMCont
     user_cfg = await get_user_default_cfg(user_id)
     text = (
         "🎬 <b>تنظیمات همیشگی پردازش ویدیو</b>\n\n"
-        "<blockquote>هرچی اینجا انتخاب کنی از این به بعد اتوماتیک روی همه ویدیوهات اعمال میشه</blockquote>\n\n"
-        "💡 <i>تنظیمات سریعا ذخیره میشن</i>"
+        "<blockquote>هرچی اینجا انتخاب کنی، از این به بعد اتوماتیک روی همه ویدیوهات اعمال میشه.</blockquote>\n\n"
+        "💡 <i>تنظیمات سریعاً ذخیره میشن.</i>"
     )
     await callback.answer()
     await callback.message.edit_text(
@@ -2563,7 +2580,7 @@ async def show_default_settings(callback: aiotypes.CallbackQuery, state: FSMCont
 async def update_default_settings_callback(callback: aiotypes.CallbackQuery):
     cfg = decode_cfg(callback.data[7:])
     await set_user_default_cfg(callback.from_user.id, cfg)
-    await callback.answer("ذخیره شد", show_alert=False)
+    await callback.answer("ذخیره شد.", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=build_default_config_keyboard(cfg))
     except TelegramBadRequest:
@@ -2575,7 +2592,7 @@ async def back_to_settings_menu(callback: aiotypes.CallbackQuery, state: FSMCont
     user_id = callback.from_user.id
     text = (
         "⚙️ <b>تنظیمات بات</b>\n\n"
-        "<blockquote>اینجا می‌تونی مدل نمایش گزارش‌ها و تنظیمات پیش‌فرض تبدیل ویدیوها رو مشخص کنی</blockquote>"
+        "<blockquote>اینجا می‌تونی مدل نمایش گزارش‌ها و تنظیمات پیش‌فرض تبدیل ویدیوها رو مشخص کنی:</blockquote>"
     )
     await callback.answer()
     await callback.message.edit_text(
@@ -2610,7 +2627,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
     cancel_b = InlineKeyboardBuilder()
     cancel_b.button(text="🔴 پشیمون شدم", callback_data="cancel_support")
 
-    msg_text = "✍️ هر سوال پیشنهاد یا مشکلی داری همینجا برام بفرست متن عکس وویس یا هرچی"
+    msg_text = "✍️ هر سوال، پیشنهاد یا مشکلی داری همینجا برام بفرست (متن، عکس، وویس یا هرچی):"
     if isinstance(event, aiotypes.CallbackQuery):
         await event.answer()
         await event.message.answer(msg_text, reply_markup=cancel_b.as_markup())
@@ -2623,7 +2640,7 @@ async def ask_support_message(event: aiotypes.Message | aiotypes.CallbackQuery, 
 @dp.callback_query(F.data == "cancel_support", StateFilter("*"))
 async def cancel_support(callback: aiotypes.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.answer("بی‌خیال شدیم")
+    await callback.answer("بی‌خیال شدیم.")
     try:
         await callback.message.delete()
     except Exception:
@@ -2666,10 +2683,10 @@ async def forward_support_message(message: aiotypes.Message, state: FSMContext):
             except Exception:
                 pass
 
-        await message.reply("✅ پیامت رسید دست پشتیبانی به زودی همینجا جوابت رو میدیم")
+        await message.reply("✅ پیامت رسید دست پشتیبانی. به زودی همینجا جوابت رو میدیم.")
     except Exception as e:
         logging.error(f"Forward to admin error: {e}")
-        await message.reply("⚠️ پیام ارسال نشد بی زحمت یه بار دیگه امتحان کن")
+        await message.reply("⚠️ پیام ارسال نشد، بی زحمت یه بار دیگه امتحان کن.")
 
     await state.clear()
 
@@ -2691,9 +2708,9 @@ async def handle_admin_reply(message: aiotypes.Message):
 
     if not target_user_id:
         text_source = (replied.text or "") + " " + (replied.caption or "")
-        match = re.search(r"آیدی\s<code>\d+</code>", text_source)
+        match = re.search(r"آیدی:\s*<code>?(\d+)</code>?", text_source)
         if not match:
-            match = re.search(r"شناسه\s<code>\d+</code>", text_source)
+            match = re.search(r"شناسه:\s*<code>?(\d+)</code>?", text_source)
         if not match:
             match = re.search(r"(\d{7,12})", text_source)
         if match:
@@ -2703,11 +2720,11 @@ async def handle_admin_reply(message: aiotypes.Message):
         return
 
     try:
-        await bot.send_message(chat_id=target_user_id, text="💬 <b>جواب پشتیبانی برات اومد</b>", parse_mode="HTML")
+        await bot.send_message(chat_id=target_user_id, text="💬 <b>جواب پشتیبانی برات اومد:</b>", parse_mode="HTML")
         await message.copy_to(chat_id=target_user_id)
-        await message.reply("✅ پاسخ با موفقیت برای کاربر ارسال شد")
+        await message.reply("✅ پاسخ با موفقیت برای کاربر ارسال شد.")
     except TelegramForbiddenError:
-        await message.reply("❌ خطا کاربر ربات را مسدود کرده است")
+        await message.reply("❌ خطا: کاربر ربات را مسدود کرده است.")
     except Exception as e:
         logging.error(f"Send admin reply error: {e}")
         await message.reply(f"⚠️ ارسال نشد، خطا:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
@@ -2719,10 +2736,10 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
     failed_job = FAILED_JOBS.pop(job_id, None)
 
     if not failed_job:
-        await callback.answer("مهلت ارسال این فایل گذشته", show_alert=True)
-        return await callback.message.edit_text("❌ مهلت ارسال این فایل تموم شده")
+        await callback.answer("مهلت ارسال این فایل گذشته.", show_alert=True)
+        return await callback.message.edit_text("❌ مهلت ارسال این فایل تموم شده.")
 
-    await callback.answer("دارم فایل رو برای بررسی پشتیبانی می‌فرستم")
+    await callback.answer("دارم فایل رو برای بررسی پشتیبانی می‌فرستم...")
     try:
         await bot.send_message(
             chat_id=ADMIN_ID,
@@ -2734,17 +2751,17 @@ async def handle_send_error_video(callback: aiotypes.CallbackQuery):
             from_chat_id=failed_job["chat_id"],
             message_id=failed_job["msg_id"]
         )
-        await callback.message.edit_text("✅ فایل برای بررسی فنی فرستاده شد")
+        await callback.message.edit_text("✅ فایل برای بررسی فنی فرستاده شد.")
     except Exception as e:
         logging.error(f"Forward error video error: {e}")
-        await callback.message.edit_text("⚠️ فایل فرستاده نشد")
+        await callback.message.edit_text("⚠️ فایل فرستاده نشد.")
 
 
 @dp.callback_query(F.data.startswith("err_cancel_vid:"))
 async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
     job_id = callback.data.split(":", 1)[1]
     FAILED_JOBS.pop(job_id, None)
-    await callback.answer("بی‌خیال شدیم")
+    await callback.answer("بی‌خیال شدیم.")
     try:
         await callback.message.delete()
     except Exception:
@@ -2753,7 +2770,7 @@ async def handle_cancel_error_video(callback: aiotypes.CallbackQuery):
 
 @dp.message(F.photo, StateFilter("*"))
 async def handle_uncompressed_photo_notice(message: aiotypes.Message):
-    await message.reply("⚠️ عکس قبول نمی‌کنیم بی زحمت فایل ویدیو یا صدا بفرست")
+    await message.reply("⚠️ عکس قبول نمی‌کنیم؛ بی زحمت فایل ویدیو یا صدا بفرست.")
 
 
 def detect_file_extension(message: aiotypes.Message | None) -> str:
@@ -2803,7 +2820,7 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
             file_obj = doc
             media_category = "audio"
         else:
-            return await message.answer("⚠️ این مدل فایل رو پشتیبانی نمی‌کنیم فقط ویدیو یا صدا بفرست")
+            return await message.answer("⚠️ این مدل فایل رو پشتیبانی نمی‌کنیم. فقط ویدیو یا صدا بفرست.")
 
     if not file_obj:
         return
@@ -2814,7 +2831,7 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
         return await message.reply(
             f"⚠️ <b>حجم این فایل {size_mb:.0f} مگابایته.</b>\n\n"
             f"<blockquote>حداکثر حجم قابل پردازش فعلی: <b>{MAX_FILE_SIZE/(1024*1024):.0f} مگابایت</b></blockquote>\n\n"
-            "برای پردازش باید فایل سبک‌تر یا کیفیت پایین‌تر بفرستی",
+            "برای پردازش باید فایل سبک‌تر یا کیفیت پایین‌تر بفرستی.",
             parse_mode="HTML"
         )
 
@@ -2843,7 +2860,7 @@ async def handle_incoming_media(message: aiotypes.Message, state: FSMContext):
             max_res = min(w, h)
             res_str = f"{w}x{h} ({max_res}p)"
         else:
-            res_str = "1080p تخمینی"
+            res_str = "1080p (تخمینی)"
 
         duration_text = format_seconds(getattr(file_obj, "duration", 0))
 
@@ -2904,9 +2921,9 @@ async def admin_fetch_orig_media(callback: aiotypes.CallbackQuery):
     token = callback.data.split(":")[1]
     data = ADMIN_MEDIA_STORE.get(token)
     if not data or not data.get("orig_file_id"):
-        return await callback.answer("❌ فایل اصلی پاک شده یا دیگه تو حافظه موقت نیست", show_alert=True)
+        return await callback.answer("❌ فایل اصلی پاک شده یا دیگه تو حافظه موقت نیست.", show_alert=True)
 
-    await callback.answer("دارم فایل اصلی کاربر رو می‌فرستم")
+    await callback.answer("دارم فایل اصلی کاربر رو می‌فرستم...")
     try:
         await bot.send_video(chat_id=ADMIN_ID, video=data["orig_file_id"], caption="📹 <b>ویدیوی اصلی که کاربر فرستاده بود</b>", parse_mode="HTML")
     except Exception:
@@ -2923,9 +2940,9 @@ async def admin_fetch_comp_media(callback: aiotypes.CallbackQuery):
     token = callback.data.split(":")[1]
     data = ADMIN_MEDIA_STORE.get(token)
     if not data or not data.get("comp_file_id"):
-        return await callback.answer("❌ فایل خروجی هنوز آماده نیست یا پاک شده", show_alert=True)
+        return await callback.answer("❌ فایل خروجی هنوز آماده نیست یا پاک شده.", show_alert=True)
 
-    await callback.answer("دارم فایل فشرده‌شده رو می‌فرستم")
+    await callback.answer("دارم فایل فشرده‌شده رو می‌فرستم...")
     is_audio = data.get("is_audio", False)
     try:
         if is_audio:
@@ -2971,7 +2988,7 @@ async def update_settings(callback: aiotypes.CallbackQuery):
 @dp.callback_query(F.data == "cancel_panel", StateFilter("*"))
 async def cancel_panel(callback: aiotypes.CallbackQuery, state: FSMContext):
     try:
-        await callback.answer("بی‌خیال شدیم")
+        await callback.answer("بی‌خیال شدیم.")
     except Exception:
         pass
     VIDEO_META_CACHE.pop(callback.message.message_id, None)
@@ -3002,13 +3019,13 @@ async def stop_processing(callback: aiotypes.CallbackQuery):
         if task and not task.done():
             task.cancel()
 
-        await callback.answer("پردازش رو متوقف کردم")
+        await callback.answer("پردازش رو متوقف کردم.")
         try:
             await callback.message.delete()
         except Exception:
             pass
     else:
-        await callback.answer("چیزی در حال پردازش نیست", show_alert=True)
+        await callback.answer("چیزی در حال پردازش نیست.", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("arun:"), StateFilter("*"))
@@ -3027,7 +3044,7 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     orig_msg_id = panel_meta.get("orig_msg_id") or (orig_msg.message_id if orig_msg else callback.message.message_id)
 
     if not file_id:
-        return await callback.message.edit_text("❌ فایل صوتی پیدا نشد")
+        return await callback.message.edit_text("❌ فایل صوتی پیدا نشد.")
 
     user_id = callback.from_user.id
     user_name = callback.from_user.full_name or "کاربر"
@@ -3094,11 +3111,11 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("quick_audio:"), StateFilter("*"))
 async def quick_audio_extract(callback: aiotypes.CallbackQuery):
-    await callback.answer("دارم ردیفش می‌کنم")
+    await callback.answer("دارم ردیفش می‌کنم...")
     job_id = callback.data.split(":", 1)[1]
     req = USER_REQUESTS.get(job_id)
     if not req:
-        return await callback.message.reply("❌ اطلاعات این ویدیو پریده")
+        return await callback.message.reply("❌ اطلاعات این ویدیو پریده.")
 
     audio_cfg = {
         "mode": "audio", "res": "orig", "codec": "h264",
@@ -3106,7 +3123,7 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     }
 
     status_msg = await callback.message.reply(
-        "⏳ <b>رفت توی صف برای کشیدن صدا</b>",
+        "⏳ <b>رفت توی صف برای کشیدن صدا...</b>",
         parse_mode="HTML"
     )
 
@@ -3133,7 +3150,7 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
             f"<blockquote>👤 کاربر: {html.escape(callback.from_user.full_name or 'کاربر')}\n"
             f"🆔 آیدی: <code>{user_id}</code>\n"
             f"🔗 یوزرنیم: {html.escape(username_str)}\n"
-            "📦 نوع کشیدن صدای MP3\n"
+            "📦 نوع: کشیدن صدای MP3\n"
             f"💵 هزینه کل تا الان: ${user_cost:.4f}</blockquote>"
         )
         try:
@@ -3173,7 +3190,7 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     in_res_str = panel_meta.get("res_str", "نامشخص")
 
     if not file_id:
-        return await callback.message.edit_text("❌ فایل اصلی پیدا نشد")
+        return await callback.message.edit_text("❌ فایل اصلی پیدا نشد.")
 
     user_id = callback.from_user.id
     user_name = callback.from_user.full_name or "کاربر"
@@ -3320,15 +3337,15 @@ async def queue_worker():
             }
 
             err_kb = InlineKeyboardBuilder()
-            err_kb.button(text="🟢 آره بفرستش برای پشتیبانی", callback_data=f"err_send_vid:{job_id}")
+            err_kb.button(text="🟢 آره، بفرستش برای پشتیبانی", callback_data=f"err_send_vid:{job_id}")
             err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
             err_kb.adjust(1)
 
             user_notice = (
-                "⚠️ متأسفانه موقع کم‌حجم کردن و تبدیل این فایل یه مشکلی پیش اومد\n\n"
-                "<blockquote>📌 ممکنه فایلت یه ایراد ساختاری داشته باشه یا کدک‌هاش استاندارد نباشه\n"
-                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد</b></blockquote>\n\n"
-                "❓ می‌خوای فایل اصلی رو بفرستیم برای پشتیبانی تا بررسیش کنن"
+                "⚠️ متأسفانه موقع کم‌حجم کردن و تبدیل این فایل یه مشکلی پیش اومد.\n\n"
+                "<blockquote>📌 ممکنه فایلت یه ایراد ساختاری داشته باشه یا کدک‌هاش استاندارد نباشه.\n"
+                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b></blockquote>\n\n"
+                "❓ می‌خوای فایل اصلی رو بفرستیم برای پشتیبانی تا بررسیش کنن؟"
             )
             try:
                 await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
@@ -3358,7 +3375,7 @@ async def ui_updater(state: dict):
             elif act == "upload":
                 text = f"📤 <b>کارش تموم شد، دارم برات می‌فرستمش...</b>\n{bar}"
             else:
-                text = "⏳ یه چند ثانیه صبر کن"
+                text = "⏳ یه چند ثانیه صبر کن..."
 
             if text != last_text:
                 await state["status_msg"].edit_text(text, reply_markup=get_cancel_keyboard(state["job_id"]), parse_mode="HTML")
@@ -3378,7 +3395,7 @@ def pyro_progress(curr, total, state):
 
 
 async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_retries: int = 3):
-    initial_size = job["file_size"]
+    initial_size = int(job.get("file_size") or 0)
     last_err = None
 
     for attempt in range(1, max_retries + 1):
@@ -3395,14 +3412,19 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
         ui_state["percent"] = 0.0
 
         try:
-            if initial_size < 19.5 * 1024 * 1024:
-                file_info = await bot.get_file(job["file_id"])
-                await bot.download_file(file_info.file_path, destination=input_path)
-            else:
-                msg = await pyro.get_messages(chat_id=job["chat_id"], message_ids=job["msg_id"])
-                if not msg or msg.empty:
-                    raise RuntimeError("پیام فایلت پیدا نشد")
+            msg = None
 
+            # برای جلوگیری از دانلود ناقص با Bot API، ابتدا پیام اصلی را با Pyrogram
+            # می‌گیریم و دانلود را با خود Pyrogram انجام می‌دهیم.
+            try:
+                msg = await pyro.get_messages(
+                    chat_id=job["chat_id"],
+                    message_ids=job["msg_id"]
+                )
+            except Exception as e:
+                logging.warning(f"Pyrogram get_messages failed on attempt {attempt}: {e}")
+
+            if msg and not msg.empty:
                 try:
                     with open(input_path, "wb") as f:
                         curr_bytes = 0
@@ -3412,31 +3434,95 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                             f.write(chunk)
                             curr_bytes += len(chunk)
                             if initial_size > 0:
-                                ui_state["percent"] = min(99.0, (curr_bytes / initial_size) * 100.0)
-                except Exception:
+                                ui_state["percent"] = min(
+                                    99.0, (curr_bytes / initial_size) * 100.0
+                                )
+
+                    downloaded_bytes = os.path.getsize(input_path) if os.path.exists(input_path) else 0
+
+                    # stream_media ممکن است بدون Exception قبل از انتهای فایل قطع شود.
+                    # در این حالت مستقیماً سراغ download_media می‌رویم.
+                    if initial_size > 0 and downloaded_bytes < int(initial_size * 0.99):
+                        logging.warning(
+                            f"Incomplete stream_media download: "
+                            f"{downloaded_bytes}/{initial_size} bytes"
+                        )
+                        try:
+                            os.remove(input_path)
+                        except OSError:
+                            pass
+
+                        await pyro.download_media(
+                            msg,
+                            file_name=input_path,
+                            progress=pyro_progress,
+                            progress_args=(ui_state,)
+                        )
+                except Exception as stream_err:
+                    logging.warning(
+                        f"stream_media failed on attempt {attempt}: {stream_err}"
+                    )
+                    try:
+                        if os.path.exists(input_path):
+                            os.remove(input_path)
+                    except OSError:
+                        pass
+
                     await pyro.download_media(
                         msg,
                         file_name=input_path,
                         progress=pyro_progress,
                         progress_args=(ui_state,)
                     )
-
-            if os.path.exists(input_path):
-                downloaded_bytes = os.path.getsize(input_path)
-                if downloaded_bytes >= (initial_size * 0.90):
-                    ui_state["percent"] = 100.0
-                    return
-                else:
-                    raise RuntimeError(f"دانلودش کامل نشد: {downloaded_bytes / (1024*1024):.2f} مگابایت")
             else:
-                raise RuntimeError("فایل ذخیره نشد")
+                # اگر پیام با Pyrogram پیدا نشد، برای فایل‌های کوچک Bot API را امتحان کن.
+                if initial_size <= 19.5 * 1024 * 1024:
+                    file_info = await bot.get_file(job["file_id"])
+                    await bot.download_file(
+                        file_info.file_path,
+                        destination=input_path
+                    )
+                else:
+                    raise RuntimeError("پیام فایل برای دانلود پیدا نشد.")
+
+            if not os.path.exists(input_path):
+                raise RuntimeError("فایل ذخیره نشد.")
+
+            downloaded_bytes = os.path.getsize(input_path)
+
+            # حجم واقعی فایل تلگرام باید تقریباً با حجم ثبت‌شده برابر باشد.
+            # اگر متادیتای حجم صفر باشد، فقط وجود و غیرخالی بودن فایل را بررسی می‌کنیم.
+            if initial_size > 0:
+                minimum_valid_size = int(initial_size * 0.99)
+                if downloaded_bytes < minimum_valid_size:
+                    raise RuntimeError(
+                        f"دانلودش کامل نشد: "
+                        f"{downloaded_bytes / (1024 * 1024):.2f} مگابایت "
+                        f"از {initial_size / (1024 * 1024):.2f} مگابایت"
+                    )
+
+            if downloaded_bytes <= 0:
+                raise RuntimeError("فایل دانلودشده خالی است.")
+
+            ui_state["percent"] = 100.0
+            return
 
         except Exception as e:
             last_err = e
-            await asyncio.sleep(2)
+            logging.warning(
+                f"Download attempt {attempt}/{max_retries} failed for job "
+                f"{job['job_id']}: {e}"
+            )
+            try:
+                if os.path.exists(input_path):
+                    os.remove(input_path)
+            except OSError:
+                pass
+
+            if attempt < max_retries:
+                await asyncio.sleep(min(2 * attempt, 5))
 
     raise RuntimeError(f"دانلود نشد: {last_err}")
-
 
 async def process_job(job: dict):
     job_id = job["job_id"]
@@ -3632,7 +3718,7 @@ async def process_job(job: dict):
             return
 
         if not os.path.exists(output_path):
-            raise RuntimeError("فایل نهایی درست نشد")
+            raise RuntimeError("فایل نهایی درست نشد.")
 
         final_size = os.path.getsize(output_path)
         ui_state["action"] = "upload"
@@ -3642,8 +3728,8 @@ async def process_job(job: dict):
         show_details = await get_user_show_details(user_id)
 
         if final_size >= initial_size:
-            reduction_str = "۰"
-            size_notice = "\n⚠️ <i>این فایل از قبل تا ته فشرده بوده کمتر از این نمیشد</i>"
+            reduction_str = "۰٪"
+            size_notice = "\n⚠️ <i>این فایل از قبل تا ته فشرده بوده، کمتر از این نمیشد.</i>"
         else:
             reduction = max(0, int(((initial_size - final_size) / initial_size) * 100))
             reduction_str = f"{reduction}%"
