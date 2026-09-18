@@ -362,7 +362,6 @@ async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tup
 
 
 async def touch_last_video_request(user_id: int, name: str = "", username: str = "", file_id: str | None = None):
-    """ثبت زمان آخرین درخواست واقعی ویدیو برای مرتب‌سازی لیست ادمین."""
     now = datetime.datetime.now(TEHRAN_TZ).replace(tzinfo=None)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -414,7 +413,6 @@ async def touch_last_video_request(user_id: int, name: str = "", username: str =
 
 
 async def get_users_for_admin_message() -> list[dict]:
-    """همه کاربران، مرتب‌شده از آخرین درخواست ویدیو به قدیمی‌ترین."""
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as conn:
@@ -597,8 +595,6 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
     save_backup_stats(stats)
 
 
-
-
 def _cache_key(url: str, quality: str) -> str:
     normalized = url.strip()
     return hashlib.sha256(f"{normalized}|{quality}".encode("utf-8")).hexdigest()
@@ -663,7 +659,6 @@ def set_cached_download(url: str, quality: str, file_id: str, size_bytes: int, w
 
 
 async def get_url_preview_info(url: str) -> dict:
-    """اطلاعات اولیه لینک را قبل از دانلود می‌گیرد تا حجم تقریبی مشخص شود."""
     cmd = [
         "yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist",
         "--no-warnings", url
@@ -731,6 +726,7 @@ async def maybe_send_random_tip(chat_id: int, user_id: int):
         TIP_LAST_SHOWN[user_id] = now
     except Exception:
         pass
+
 
 async def register_user(user_id: int, name: str = "", username: str = ""):
     today = get_tehran_date()
@@ -928,7 +924,6 @@ def _default_video_cfg() -> dict:
 
 
 async def migrate_prefs_to_db():
-    """Migrate old JSON preferences to PostgreSQL without overwriting existing DB values."""
     if not DB_POOL or not PREFS_CACHE:
         return
     try:
@@ -1046,7 +1041,6 @@ async def create_video_request(
     width: int | None = None, height: int | None = None, source_url: str | None = None,
     service: str | None = None, config: dict | None = None
 ) -> int | None:
-    """Persist one user video request. Local runtime dictionaries remain only temporary caches."""
     if not DB_POOL:
         return None
     try:
@@ -1283,7 +1277,6 @@ async def get_settings_inline_keyboard(user_id: int):
     return builder.as_markup()
 
 
-
 async def get_active_users_summary() -> dict:
     now = datetime.datetime.now(TEHRAN_TZ).replace(tzinfo=None)
     periods = {"امروز": now - datetime.timedelta(days=1), "هفته": now - datetime.timedelta(days=7), "ماه": now - datetime.timedelta(days=30)}
@@ -1312,17 +1305,17 @@ async def get_active_users_summary() -> dict:
             logging.error(f"Active users DB error: {e}")
     stats = load_backup_stats().get("users", {})
     for uid, data in stats.items():
-        raw = data.get("last_activity_at")
-        if not raw:
+        raw_val = data.get("last_activity_at")
+        if not raw_val:
             continue
         try:
-            dt = datetime.datetime.fromisoformat(str(raw))
+            dt = datetime.datetime.fromisoformat(str(raw_val))
         except Exception:
             continue
         if dt >= periods["امروز"]: result["امروز"] += 1
         if dt >= periods["هفته"]: result["هفته"] += 1
         if dt >= periods["ماه"]: result["ماه"] += 1
-        users.append({"user_id": int(uid), "name": data.get("name") or "کاربر", "username": data.get("username") or "", "last_activity_at": raw})
+        users.append({"user_id": int(uid), "name": data.get("name") or "کاربر", "username": data.get("username") or "", "last_activity_at": raw_val})
     users.sort(key=lambda x: (x.get("last_activity_at") or "", int(x["user_id"])), reverse=True)
     return {"counts": result, "users": users[:30]}
 
@@ -1343,6 +1336,7 @@ def format_active_users_text(data: dict) -> str:
             last = last.strftime("%Y-%m-%d %H:%M")
         lines.append(f"{i}. {name} | {uname} | <code>{u['user_id']}</code>\n   └ {html.escape(str(last or 'نامشخص'))}")
     return "\n".join(lines)
+
 
 def get_admin_panel_keyboard():
     builder = InlineKeyboardBuilder()
@@ -1539,7 +1533,6 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
 
 
 async def clear_tracked_settings_message(chat_id: int, state: FSMContext):
-    """Clear the current FSM state and remove any previously opened settings panel."""
     try:
         data = await state.get_data()
     except Exception:
@@ -1688,7 +1681,6 @@ async def send_compression_guide(callback: aiotypes.CallbackQuery):
     await callback.message.answer(guide_text, parse_mode="HTML")
 
 
-
 @dp.callback_query(F.data == "open_tips", StateFilter("*"))
 async def show_tips_handler(callback: aiotypes.CallbackQuery):
     await callback.answer()
@@ -1722,7 +1714,6 @@ async def handle_url_message(message: aiotypes.Message, state: FSMContext):
         return
     url = match.group(1).strip()
 
-    # لینک‌های تلگرام (گروه، کانال و یوزرنیم) لینک دانلود ویدیو نیستند.
     try:
         parsed_host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
         if parsed_host.startswith("www."):
@@ -1840,7 +1831,6 @@ async def process_ytdl_download(callback: aiotypes.CallbackQuery):
     preview = await get_url_preview_info(url)
     estimated_size = int(preview.get("filesize") or preview.get("filesize_approx") or 0)
     title = preview.get("title") or ""
-    preview_height = int(preview.get("height") or 0)
     if estimated_size > MAX_FILE_SIZE:
         lower_kb = None
         if str(quality) != "480":
@@ -2299,7 +2289,6 @@ async def process_broadcast(message: aiotypes.Message, state: FSMContext):
     )
 
 
-
 @dp.callback_query(F.data == "admin_active_users", StateFilter("*"))
 async def show_active_users_admin(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -2321,7 +2310,7 @@ async def admin_user_search_prompt(callback: aiotypes.CallbackQuery, state: FSMC
     b = InlineKeyboardBuilder()
     b.button(text="🔴 لغو", callback_data="cancel_admin_action")
     await callback.message.edit_text(
-        "🔎 <b>جستجوی کاربر</b>\\n\\nنام، یوزرنیم یا آیدی عددی کاربر رو بفرست:",
+        "🔎 <b>جستجوی کاربر</b>\n\nنام، یوزرنیم یا آیدی عددی کاربر رو بفرست:",
         reply_markup=b.as_markup(), parse_mode="HTML"
     )
     await state.set_state(AdminMessageState.waiting_for_user_search)
@@ -3040,7 +3029,7 @@ async def enqueue_audio_task(callback: aiotypes.CallbackQuery):
     panel_meta = VIDEO_META_CACHE.get(callback.message.message_id, {})
     orig_msg = callback.message.reply_to_message
     file_id = panel_meta.get("file_id") or (orig_msg.audio.file_id if orig_msg and (orig_msg.audio or orig_msg.voice or orig_msg.document) else None)
-    file_size = panel_meta.get("file_size") or (orig_msg.audio.file_size if orig_msg and (orig_msg.audio or orig_msg.voice or orig_msg.document) else 10 * 1024 * 1024)
+    file_size = panel_meta.get("file_size") or (orig_msg.audio.file_size if orig_msg and (orig_msg.audio or orig_msg.voice or orig_msg.document) else 0)
     orig_msg_id = panel_meta.get("orig_msg_id") or (orig_msg.message_id if orig_msg else callback.message.message_id)
 
     if not file_id:
@@ -3128,12 +3117,16 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     )
 
     user_id = callback.from_user.id
-    await touch_last_video_request(user_id, callback.from_user.full_name or "کاربر", callback.from_user.username or "", req["file_id"])
+    target_media = callback.message.video or callback.message.document or callback.message.audio
+    target_file_id = target_media.file_id if target_media else req["file_id"]
+    real_size = target_media.file_size if target_media else req.get("file_size", 0)
+
+    await touch_last_video_request(user_id, callback.from_user.full_name or "کاربر", callback.from_user.username or "", target_file_id)
     token = uuid.uuid4().hex[:8]
     if len(ADMIN_MEDIA_STORE) > 500:
         ADMIN_MEDIA_STORE.pop(next(iter(ADMIN_MEDIA_STORE)))
     ADMIN_MEDIA_STORE[token] = {
-        "orig_file_id": req["file_id"],
+        "orig_file_id": target_file_id,
         "comp_file_id": None,
         "is_audio": True
     }
@@ -3162,7 +3155,7 @@ async def quick_audio_extract(callback: aiotypes.CallbackQuery):
     ACTIVE_PROCESSES[new_job_id] = {"cancelled": False, "proc": None}
     await JOB_QUEUE.put((1.0, 0, {
         "job_id": new_job_id, "media_type": "video", "cfg": audio_cfg, "msg_id": callback.message.message_id,
-        "file_size": 10 * 1024 * 1024, "file_id": req["file_id"],
+        "file_size": real_size, "file_id": target_file_id,
         "chat_id": callback.message.chat.id, "user": callback.from_user,
         "user_id": user_id,
         "orig_ext": "mp4",
@@ -3197,10 +3190,13 @@ async def enqueue_task(callback: aiotypes.CallbackQuery):
     username = f"@{callback.from_user.username}" if callback.from_user.username else "ندارد"
     job_id = f"{callback.message.chat.id}_{callback.message.message_id}"
 
+    if len(USER_REQUESTS) > 500:
+        USER_REQUESTS.pop(next(iter(USER_REQUESTS)))
     USER_REQUESTS[job_id] = {
         "file_id": file_id,
         "user_id": user_id,
-        "name": user_name
+        "name": user_name,
+        "file_size": file_size
     }
 
     await create_video_request(
@@ -3414,8 +3410,6 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
         try:
             msg = None
 
-            # برای جلوگیری از دانلود ناقص با Bot API، ابتدا پیام اصلی را با Pyrogram
-            # می‌گیریم و دانلود را با خود Pyrogram انجام می‌دهیم.
             try:
                 msg = await pyro.get_messages(
                     chat_id=job["chat_id"],
@@ -3425,6 +3419,11 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                 logging.warning(f"Pyrogram get_messages failed on attempt {attempt}: {e}")
 
             if msg and not msg.empty:
+                media = msg.video or msg.document or msg.audio or msg.voice
+                if media and getattr(media, "file_size", None):
+                    initial_size = media.file_size
+                    job["file_size"] = media.file_size
+
                 try:
                     with open(input_path, "wb") as f:
                         curr_bytes = 0
@@ -3440,8 +3439,6 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
 
                     downloaded_bytes = os.path.getsize(input_path) if os.path.exists(input_path) else 0
 
-                    # stream_media ممکن است بدون Exception قبل از انتهای فایل قطع شود.
-                    # در این حالت مستقیماً سراغ download_media می‌رویم.
                     if initial_size > 0 and downloaded_bytes < int(initial_size * 0.99):
                         logging.warning(
                             f"Incomplete stream_media download: "
@@ -3475,9 +3472,11 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                         progress_args=(ui_state,)
                     )
             else:
-                # اگر پیام با Pyrogram پیدا نشد، برای فایل‌های کوچک Bot API را امتحان کن.
-                if initial_size <= 19.5 * 1024 * 1024:
+                if initial_size <= 19.5 * 1024 * 1024 or not msg:
                     file_info = await bot.get_file(job["file_id"])
+                    if file_info.file_size:
+                        initial_size = file_info.file_size
+                        job["file_size"] = file_info.file_size
                     await bot.download_file(
                         file_info.file_path,
                         destination=input_path
@@ -3490,8 +3489,6 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
 
             downloaded_bytes = os.path.getsize(input_path)
 
-            # حجم واقعی فایل تلگرام باید تقریباً با حجم ثبت‌شده برابر باشد.
-            # اگر متادیتای حجم صفر باشد، فقط وجود و غیرخالی بودن فایل را بررسی می‌کنیم.
             if initial_size > 0:
                 minimum_valid_size = int(initial_size * 0.99)
                 if downloaded_bytes < minimum_valid_size:
@@ -3523,6 +3520,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                 await asyncio.sleep(min(2 * attempt, 5))
 
     raise RuntimeError(f"دانلود نشد: {last_err}")
+
 
 async def process_job(job: dict):
     job_id = job["job_id"]
@@ -3809,6 +3807,15 @@ async def process_job(job: dict):
             )
             delivered_file_id = sent_msg.video.file_id
 
+        if len(USER_REQUESTS) > 500:
+            USER_REQUESTS.pop(next(iter(USER_REQUESTS)))
+        USER_REQUESTS[job_id] = {
+            "file_id": delivered_file_id,
+            "user_id": user_id,
+            "name": user_name,
+            "file_size": final_size
+        }
+
         if token and token in ADMIN_MEDIA_STORE:
             ADMIN_MEDIA_STORE[token]["comp_file_id"] = delivered_file_id
 
@@ -3886,8 +3893,6 @@ async def process_job(job: dict):
                     pass
 
 
-
-
 async def download_cache_cleanup_worker():
     while True:
         try:
@@ -3895,6 +3900,7 @@ async def download_cache_cleanup_worker():
         except Exception:
             pass
         await asyncio.sleep(60 * 60)
+
 
 async def main():
     clean_residual_downloads()
