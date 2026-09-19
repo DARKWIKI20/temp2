@@ -1126,7 +1126,6 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
-                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -1454,7 +1453,7 @@ def build_audio_keyboard(bitrate="96k", fmt="mp3", speed="1.0"):
         b.button(text=txt + (" ✅" if bitrate == br else ""), callback_data=f"acfg:{br}:{fmt}:{speed}")
     for af, txt in [("mp3", "MP3"), ("m4a", "M4A"), ("ogg", "OGG"), ("flac", "FLAC")]:
         b.button(text=txt + (" ✅" if fmt == af else ""), callback_data=f"acfg:{bitrate}:{af}:{speed}")
-    for sp, txt in [("1.0", "سرعت ۱x"), ("1.25", "۱.۲۵x"), ("1.5", "۱.۵x")]:
+    for sp, txt in [("1.0", "سرعت ۱x"), ("1.25", "۱.۲۵x"), ("1.5", "۱.5x")]:
         b.button(text=txt + (" ✅" if speed == sp else ""), callback_data=f"acfg:{bitrate}:{fmt}:{sp}")
 
     start_phrase = random.choice(START_PHRASES)
