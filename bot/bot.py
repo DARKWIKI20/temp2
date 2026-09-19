@@ -1471,11 +1471,11 @@ def get_cancel_keyboard(job_id: str):
 
 
 async def get_media_meta(file_path: str) -> dict:
-    meta = {"duration": 0, "width": 1280, "height": 720, "has_audio": False}
+    meta = {"duration": 0, "width": 1280, "height": 720, "has_audio": False, "v_codec": "h264"}
     try:
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "stream=width,height,duration,codec_type:format=duration",
+            "-show_entries", "stream=width,height,duration,codec_type,codec_name:format=duration",
             "-of", "json", file_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -1489,6 +1489,7 @@ async def get_media_meta(file_path: str) -> dict:
             for s in data["streams"]:
                 c_type = s.get("codec_type")
                 if c_type == "video":
+                    meta["v_codec"] = s.get("codec_name", "h264")
                     if "width" in s and "height" in s:
                         meta["width"] = int(s["width"])
                         meta["height"] = int(s["height"])
@@ -1499,6 +1500,36 @@ async def get_media_meta(file_path: str) -> dict:
     except Exception as e:
         logging.warning(f"Metadata read error: {e}")
     return meta
+
+
+async def repair_video_color(input_path: str, repaired_path: str, v_codec: str) -> bool:
+    bsf_targets = []
+    if v_codec == "h264":
+        bsf_targets.append("h264_metadata=matrix_coefficients=1:colour_primaries=1:transfer_characteristics=1")
+    elif v_codec in ("hevc", "h265"):
+        bsf_targets.append("hevc_metadata=matrix_coefficients=1:colour_primaries=1:transfer_characteristics=1")
+    else:
+        bsf_targets.extend([
+            "h264_metadata=matrix_coefficients=1:colour_primaries=1:transfer_characteristics=1",
+            "hevc_metadata=matrix_coefficients=1:colour_primaries=1:transfer_characteristics=1"
+        ])
+
+    for bsf in bsf_targets:
+        cmd = [FFMPEG_BIN, "-y", "-i", input_path, "-c", "copy", "-bsf:v", bsf, repaired_path]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await proc.wait()
+        if proc.returncode == 0 and os.path.exists(repaired_path) and os.path.getsize(repaired_path) > 0:
+            return True
+        if os.path.exists(repaired_path):
+            try:
+                os.remove(repaired_path)
+            except OSError:
+                pass
+
+    cmd_remux = [FFMPEG_BIN, "-y", "-i", input_path, "-c", "copy", "-map", "0", repaired_path]
+    proc_remux = await asyncio.create_subprocess_exec(*cmd_remux, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    await proc_remux.wait()
+    return proc_remux.returncode == 0 and os.path.exists(repaired_path) and os.path.getsize(repaired_path) > 0
 
 
 async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
@@ -3426,6 +3457,7 @@ async def process_job(job: dict):
         out_ext = "bin"
 
     input_path = os.path.join(DOWNLOAD_DIR, f"in_{job_id}.{orig_ext}")
+    repaired_path = os.path.join(DOWNLOAD_DIR, f"repaired_{job_id}.{orig_ext}")
     output_path = os.path.join(DOWNLOAD_DIR, f"out_{job_id}.{out_ext}")
     thumb_path = os.path.join(DOWNLOAD_DIR, f"thumb_{job_id}.jpg")
 
@@ -3441,7 +3473,7 @@ async def process_job(job: dict):
     ui_task = asyncio.create_task(ui_updater(ui_state))
 
     try:
-        for p in (input_path, output_path, thumb_path):
+        for p in (input_path, repaired_path, output_path, thumb_path):
             if os.path.exists(p):
                 try:
                     os.remove(p)
@@ -3548,6 +3580,18 @@ async def process_job(job: dict):
                 cmd += ["-progress", "pipe:1", output_path]
 
             returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
+
+            if returncode != 0 and not ACTIVE_PROCESSES.get(job_id, {}).get("cancelled") and returncode != -1:
+                if "Invalid color space" in err_msg or returncode == 234 or "-22" in err_msg:
+                    logging.warning(f"Color space error on job {job_id}. Attempting BSF repair...")
+                    raw_v_codec = in_meta.get("v_codec", "h264")
+                    repaired = await repair_video_color(input_path, repaired_path, raw_v_codec)
+                    if repaired:
+                        retry_cmd = [repaired_path if arg == input_path else arg for arg in cmd]
+                        ui_state["percent"] = 5.0
+                        ui_state["eta"] = None
+                        returncode, err_msg = await run_ffmpeg_with_progress(retry_cmd, ui_state, eff_duration, job_id)
+
             if returncode != 0:
                 if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled") or returncode == -1:
                     return
@@ -3761,7 +3805,7 @@ async def process_job(job: dict):
         ui_state["done"] = True
         if not ui_task.done():
             ui_task.cancel()
-        for p in (input_path, output_path, thumb_path):
+        for p in (input_path, repaired_path, output_path, thumb_path):
             if os.path.exists(p):
                 try:
                     os.remove(p)
