@@ -811,14 +811,14 @@ async def get_user_stat(user_id: int) -> dict | None:
                            COALESCE(username, '') as username, 
                            CAST(COALESCE(total_cost, 0.0) AS FLOAT) as total_cost, 
                            CAST(COALESCE(total_jobs, 0) AS INT) as total_jobs, 
-                           today_date,
+                           today_date, 
                            CAST(COALESCE(today_mb, 0.0) AS FLOAT) as today_mb, 
                            max_vid_file_id, 
                            CAST(COALESCE(max_vid_cost, 0.0) AS FLOAT) as max_vid_cost, 
                            CAST(COALESCE(max_vid_size_mb, 0.0) AS FLOAT) as max_vid_size_mb, 
-                           max_vid_date,
-                           last_request_at,
-                           last_request_file_id,
+                           max_vid_date, 
+                           last_request_at, 
+                           last_request_file_id, 
                            COALESCE(is_banned, FALSE) as is_banned
                     FROM user_stats
                     WHERE user_id = $1;
@@ -1126,6 +1126,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
+                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -1158,56 +1159,67 @@ pyro.save_file = types.MethodType(custom_save_file, pyro)
 async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: float, job_id: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
     ACTIVE_PROCESSES[job_id]["proc"] = proc
 
     time_us_pattern = re.compile(r"out_time_us=(\d+)")
     time_str_pattern = re.compile(r"out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
-    last_lines = []
+    stderr_lines = []
     start_time = time.time()
 
-    while True:
-        line = await proc.stderr.readline()
-        if not line:
-            break
+    async def read_stdout_progress():
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
 
-        if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return -1, "cancelled"
+            if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return
 
-        decoded = line.decode(errors="ignore").strip()
-        if decoded:
-            last_lines.append(decoded)
-            if len(last_lines) > 8:
-                last_lines.pop(0)
+            decoded = line.decode(errors="ignore").strip()
+            current_secs = None
+            match_us = time_us_pattern.search(decoded)
+            if match_us:
+                current_secs = float(match_us.group(1)) / 1_000_000.0
+            else:
+                match_str = time_str_pattern.search(decoded)
+                if match_str:
+                    h, m, s = map(float, match_str.groups())
+                    current_secs = h * 3600 + m * 60 + s
 
-        current_secs = None
-        match_us = time_us_pattern.search(decoded)
-        if match_us:
-            current_secs = float(match_us.group(1)) / 1_000_000.0
-        else:
-            match_str = time_str_pattern.search(decoded)
-            if match_str:
-                h, m, s = map(float, match_str.groups())
-                current_secs = h * 3600 + m * 60 + s
+            if current_secs is not None and total_duration > 0:
+                pct = (current_secs / total_duration) * 100.0
+                ui_state["percent"] = min(99.0, max(5.0, pct))
+                elapsed = time.time() - start_time
+                if elapsed > 2.0 and current_secs > 1.0:
+                    speed = current_secs / elapsed
+                    if speed > 0:
+                        rem_secs = max(0.0, total_duration - current_secs) / speed
+                        mins, secs = divmod(int(rem_secs), 60)
+                        ui_state["eta"] = f"{mins} دقیقه و {secs} ثانیه" if mins > 0 else f"{secs} ثانیه"
 
-        if current_secs is not None and total_duration > 0:
-            pct = (current_secs / total_duration) * 100.0
-            ui_state["percent"] = min(99.0, max(5.0, pct))
-            elapsed = time.time() - start_time
-            if elapsed > 2.0 and current_secs > 1.0:
-                speed = current_secs / elapsed
-                if speed > 0:
-                    rem_secs = max(0.0, total_duration - current_secs) / speed
-                    mins, secs = divmod(int(rem_secs), 60)
-                    ui_state["eta"] = f"{mins} دقیقه و {secs} ثانیه" if mins > 0 else f"{secs} ثانیه"
+    async def read_stderr_logs():
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            decoded = line.decode(errors="ignore").strip()
+            if decoded:
+                stderr_lines.append(decoded)
+                if len(stderr_lines) > 25:
+                    stderr_lines.pop(0)
+
+    progress_task = asyncio.create_task(read_stdout_progress())
+    stderr_task = asyncio.create_task(read_stderr_logs())
 
     await proc.wait()
+    await asyncio.gather(progress_task, stderr_task, return_exceptions=True)
 
     if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
         return -1, "cancelled"
@@ -1215,7 +1227,7 @@ async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: fl
     if proc.returncode == -9:
         err_output = "سیستم به خاطر کمبود رم مجبور شد پردازش رو ببنده."
     else:
-        err_output = "\n".join(last_lines[-5:]) if last_lines else ""
+        err_output = "\n".join(stderr_lines[-15:]) if stderr_lines else ""
 
     return proc.returncode, err_output
 
@@ -3469,7 +3481,7 @@ async def process_job(job: dict):
                 cmd = [
                     FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
                     "-vn", "-map_metadata", "-1",
-                    "-max_muxing_queue_size", "1024"
+                    "-max_muxing_queue_size", "4096"
                 ]
                 if out_ext == "mp3":
                     cmd += ["-c:a", "libmp3lame", "-b:a", "96k", "-ar", "44100"]
@@ -3484,7 +3496,7 @@ async def process_job(job: dict):
 
                 if speed_factor != 1.0:
                     cmd += ["-filter:a", f"atempo={speed_factor}"]
-                cmd += ["-progress", "pipe:2", output_path]
+                cmd += ["-progress", "pipe:1", output_path]
             else:
                 v_codec = "libx265" if cfg["codec"] == "h265" else "libx264"
                 if v_codec == "libx265":
@@ -3494,18 +3506,17 @@ async def process_job(job: dict):
 
                 include_real_audio = has_audio and not cfg["mute"]
 
-                cmd = [FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path]
-                if not include_real_audio:
-                    cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-
-                cmd += ["-max_muxing_queue_size", "1024"]
+                cmd = [
+                    FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
+                    "-max_muxing_queue_size", "4096"
+                ]
 
                 vf = []
                 if speed_factor != 1.0:
                     vf.append(f"setpts={1.0 / speed_factor}*PTS")
 
                 if target_res != "orig":
-                    vf.append(f"scale='if(gte(iw,ih),-2,{target_res})':'if(gte(iw,ih),{target_res},-2)':flags=fast_bilinear")
+                    vf.append(f"scale='if(gte(iw,ih),-2,trunc({target_res}/2)*2)':'if(gte(iw,ih),trunc({target_res}/2)*2,-2)':flags=fast_bilinear")
                 else:
                     vf.append("scale='trunc(iw/2)*2':'trunc(ih/2)*2'")
 
@@ -3523,17 +3534,18 @@ async def process_job(job: dict):
                     cmd += ["-x264opts", "rc-lookahead=15:sync-lookahead=0:bframes=2:threads=2"]
 
                 if include_real_audio:
+                    cmd += ["-map", "0:a:0?"]
                     if speed_factor != 1.0:
-                        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k", "-filter:a", f"atempo={speed_factor}"]
+                        cmd += ["-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-filter:a", f"atempo={speed_factor}"]
                     else:
-                        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k"]
+                        cmd += ["-c:a", "aac", "-b:a", "96k", "-ar", "44100"]
                 else:
-                    cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "32k", "-shortest"]
+                    cmd += ["-an"]
 
                 cmd += ["-avoid_negative_ts", "make_zero"]
                 if out_ext in ["mp4", "mov", "m4a"]:
                     cmd += ["-movflags", "+faststart"]
-                cmd += ["-progress", "pipe:2", output_path]
+                cmd += ["-progress", "pipe:1", output_path]
 
             returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
             if returncode != 0:
@@ -3551,7 +3563,8 @@ async def process_job(job: dict):
 
             cmd = [
                 FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
-                "-vn", "-map_metadata", "-1"
+                "-vn", "-map_metadata", "-1",
+                "-max_muxing_queue_size", "4096"
             ]
 
             ar_rate = "32000" if br in ["48k", "64k"] else "44100"
@@ -3567,7 +3580,7 @@ async def process_job(job: dict):
 
             if sp != 1.0:
                 cmd += ["-filter:a", f"atempo={sp}"]
-            cmd += ["-progress", "pipe:2", output_path]
+            cmd += ["-progress", "pipe:1", output_path]
 
             returncode, err_msg = await run_ffmpeg_with_progress(cmd, ui_state, eff_duration, job_id)
             if returncode != 0:
