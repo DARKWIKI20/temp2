@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.5.0"
+BOT_VERSION = "2.5.1"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
@@ -1626,7 +1626,7 @@ async def show_changelog_message(message: aiotypes.Message):
     if await is_user_banned(message.from_user.id):
         return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه 2.5.0)</b>\n\n"
+        "🚀 <b>تغییرات جدید بات (نسخه )</b>\n\n"
         "<blockquote>"
         "⚡️ <b>بهینه‌سازی کلی و تمرکز روی فشرده‌سازی:</b> حذف بخش‌های اضافی برای سرعت و پایداری بالاتر پردازش‌ها.\n\n"
         "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
@@ -1642,12 +1642,7 @@ async def show_changelog_handler(callback: aiotypes.CallbackQuery):
         return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     await callback.answer()
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه 2.5.0)</b>\n\n"
-        "<blockquote>"
-        "⚡️ <b>بهینه‌سازی کلی و تمرکز روی فشرده‌سازی:</b> حذف بخش‌های اضافی برای سرعت و پایداری بالاتر پردازش‌ها.\n\n"
-        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها مرتب شدند."
-        "</blockquote>"
+        "..."
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
 
@@ -3270,11 +3265,11 @@ async def ui_updater(state: dict):
             elif act == "encode":
                 eta_val = state.get("eta")
                 if eta_val:
-                    text = f"⚙️ <b>دارم فشرده و مرتبش می‌کنم...</b>\n{bar}\n⏱ حدوداً مونده: <b>{eta_val}</b>"
+                    text = f"⚙️ <b>دارم فشرده می‌کنم...</b>\n{bar}\n⏱ حدوداً مونده: <b>{eta_val}</b>"
                 else:
                     text = f"⚙️ <b>دارم فشرده و مرتبش می‌کنم...</b>\n{bar}"
             elif act == "upload":
-                text = f"📤 <b>کارش تموم شد، دارم برات می‌فرستمش...</b>\n{bar}"
+                text = f"📤 <b>کارش تموم شد دارم برات می‌فرستمش...</b>\n{bar}"
             else:
                 text = "⏳ یه چند ثانیه صبر کن..."
 
