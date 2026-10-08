@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.5.1"
+BOT_VERSION = "2.6.0"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
@@ -96,7 +96,9 @@ class AdminMessageState(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_single_content = State()
     waiting_for_broadcast_content = State()
+    waiting_for_broadcast_confirmation = State()
     waiting_for_custom_limit = State()
+    waiting_for_user_custom_limit = State()
     waiting_for_reset_confirmation = State()
     waiting_for_user_search = State()
     waiting_for_ban_id = State()
@@ -257,6 +259,36 @@ async def get_banned_users() -> list[dict]:
     return res
 
 
+async def set_user_custom_limit_db(user_id: int, limit_mb: int | None):
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO user_stats (user_id, custom_limit_mb, today_date, total_cost, total_jobs, today_mb)
+                    VALUES ($1, $2, $3, 0.0, 0, 0.0)
+                    ON CONFLICT (user_id) DO UPDATE SET custom_limit_mb = $2;
+                """, user_id, limit_mb, get_tehran_date())
+        except Exception as e:
+            logging.error(f"DB set user custom limit error: {e}")
+
+    stats = load_backup_stats()
+    stats.setdefault("users", {})
+    u_key = str(user_id)
+    if u_key in stats["users"]:
+        stats["users"][u_key]["custom_limit_mb"] = limit_mb
+    else:
+        stats["users"][u_key] = {
+            "name": "کاربر",
+            "username": "",
+            "total_cost": 0.0,
+            "total_jobs": 0,
+            "today_date": get_tehran_date().isoformat(),
+            "today_mb": 0.0,
+            "custom_limit_mb": limit_mb
+        }
+    save_backup_stats(stats)
+
+
 async def init_db():
     global DB_POOL
     if not DATABASE_URL:
@@ -301,6 +333,7 @@ async def init_db():
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_request_file_id TEXT;")
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP;")
             await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE user_stats ADD COLUMN IF NOT EXISTS custom_limit_mb INT DEFAULT NULL;")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS support_tickets (
                     admin_msg_id BIGINT PRIMARY KEY,
@@ -401,11 +434,29 @@ async def midnight_reset_worker():
         logging.info("Daily quota automatically reset at Tehran midnight.")
 
 
+async def get_user_effective_limit(user_id: int) -> int:
+    if user_id == ADMIN_ID:
+        return 0
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                c_lim = await conn.fetchval("SELECT custom_limit_mb FROM user_stats WHERE user_id = $1;", user_id)
+                if c_lim is not None:
+                    return int(c_lim)
+        except Exception:
+            pass
+    stats = load_backup_stats()
+    u = stats.get("users", {}).get(str(user_id), {})
+    if "custom_limit_mb" in u and u["custom_limit_mb"] is not None:
+        return int(u["custom_limit_mb"])
+    return await get_daily_limit_mb()
+
+
 async def check_and_update_daily_usage(user_id: int, file_size_mb: float) -> tuple[bool, float, int]:
     if user_id == ADMIN_ID:
         return True, 0.0, 0
 
-    limit = await get_daily_limit_mb()
+    limit = await get_user_effective_limit(user_id)
     if limit == 0:
         return True, 0.0, 0
 
@@ -469,7 +520,8 @@ async def touch_last_video_request(user_id: int, name: str = "", username: str =
         "max_video": None,
         "last_request_at": None,
         "last_request_file_id": None,
-        "is_banned": False
+        "is_banned": False,
+        "custom_limit_mb": None
     })
     if name:
         u["name"] = name
@@ -636,6 +688,7 @@ async def record_job_stats(user_id: int, name: str, username: str, cost: float, 
             "last_request_at": None,
             "last_request_file_id": None,
             "is_banned": False,
+            "custom_limit_mb": None,
             "last_activity_at": datetime.datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -727,7 +780,8 @@ async def register_user(user_id: int, name: str = "", username: str = ""):
             "max_video": None,
             "last_request_at": None,
             "last_request_file_id": None,
-            "is_banned": False
+            "is_banned": False,
+            "custom_limit_mb": None
         }
         save_backup_stats(stats)
     else:
@@ -819,7 +873,8 @@ async def get_user_stat(user_id: int) -> dict | None:
                            max_vid_date, 
                            last_request_at, 
                            last_request_file_id, 
-                           COALESCE(is_banned, FALSE) as is_banned
+                           COALESCE(is_banned, FALSE) as is_banned,
+                           custom_limit_mb
                     FROM user_stats
                     WHERE user_id = $1;
                 """, user_id)
@@ -849,7 +904,8 @@ async def get_user_stat(user_id: int) -> dict | None:
         "max_vid_date": mv.get("date"),
         "last_request_at": u.get("last_request_at"),
         "last_request_file_id": u.get("last_request_file_id"),
-        "is_banned": bool(u.get("is_banned", False))
+        "is_banned": bool(u.get("is_banned", False)),
+        "custom_limit_mb": u.get("custom_limit_mb")
     }
 
 
@@ -1126,6 +1182,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
+                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -1323,7 +1380,7 @@ def format_active_users_text(data: dict) -> str:
 def get_admin_panel_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🏆 پرمصرف‌ترین کاربرا", callback_data="admin_top_users")
-    builder.button(text="⏱ سقف سهمیه روزانه", callback_data="admin_set_limit")
+    builder.button(text="⏱ سقف سهمیه روزانه عمومی", callback_data="admin_set_limit")
     builder.button(text="📢 ارسال پیام همگانی", callback_data="admin_broadcast")
     builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
     builder.button(text="🔎 جستجوی کاربر", callback_data="admin_user_search")
@@ -1626,11 +1683,11 @@ async def show_changelog_message(message: aiotypes.Message):
     if await is_user_banned(message.from_user.id):
         return await message.answer("⛔️ حساب کاربری شما مسدود شده است.")
     changelog_text = (
-        "🚀 <b>تغییرات جدید بات (نسخه )</b>\n\n"
+        f"🚀 <b>تغییرات جدید بات (نسخه {BOT_VERSION})</b>\n\n"
         "<blockquote>"
-        "⚡️ <b>بهینه‌سازی کلی و تمرکز روی فشرده‌سازی:</b> حذف بخش‌های اضافی برای سرعت و پایداری بالاتر پردازش‌ها.\n\n"
-        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها مرتب شدند."
+        "🛠 <b>رفع ۱۲ مشکل گزارش شده:</b> برطرف‌سازی باگ‌های شناسایی‌شده و پایداری عملکرد پردازش.\n\n"
+        "⚡️ <b>بهینه‌سازی سیستم مصرف:</b> قابلیت مدیریت دقیق‌تر سهمیه کاربران و اعمال محدودیت‌های فردی.\n\n"
+        "🛡 <b>افزایش امنیت عملیات مدیریتی:</b> تایید دو مرحله‌ای ارسال پیام همگانی."
         "</blockquote>"
     )
     await message.answer(changelog_text, parse_mode="HTML")
@@ -1642,7 +1699,11 @@ async def show_changelog_handler(callback: aiotypes.CallbackQuery):
         return await callback.answer("⛔️ حساب شما مسدود است.", show_alert=True)
     await callback.answer()
     changelog_text = (
-        "..."
+        f"🚀 <b>تغییرات جدید بات (نسخه {BOT_VERSION})</b>\n\n"
+        "<blockquote>"
+        "🛠 <b>رفع ۱۲ مشکل گزارش شده</b>\n"
+        "⚡️ بهبود پایداری فرآیندها و استخراج مدیا"
+        "</blockquote>"
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
 
@@ -1666,7 +1727,7 @@ async def show_user_profile_stats(event: aiotypes.Message | aiotypes.CallbackQue
         except Exception:
             pass
     u_stat = await get_user_stat(user_id)
-    limit = await get_daily_limit_mb()
+    limit = await get_user_effective_limit(user_id)
 
     today_mb = float(u_stat.get("today_mb") or 0.0) if u_stat else 0.0
     total_jobs = int(u_stat.get("total_jobs") or 0) if u_stat else 0
@@ -1741,9 +1802,9 @@ async def admin_panel_handler(message: aiotypes.Message, state: FSMContext):
     limit = await get_daily_limit_mb()
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
     await message.answer(
-        f"👑 <b>پنل مدیریت ربات</b>\n\n"
+        f"👑 <b>پنل مدیریت ربات (نسخه {BOT_VERSION})</b>\n\n"
         f"<blockquote>👥 کل کاربرها: <b>{len(all_users)} نفر</b>\n"
-        f"⏱ سقف مصرف روزانه: <b>{limit_str}</b></blockquote>\n\n"
+        f"⏱ سقف مصرف روزانه عمومی: <b>{limit_str}</b></blockquote>\n\n"
         f"کدوم کار رو می‌خوای انجام بدی؟",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="HTML"
@@ -1889,6 +1950,51 @@ async def admin_toggle_ban_handler(callback: aiotypes.CallbackQuery):
     await show_single_user_stat(callback)
 
 
+@dp.callback_query(F.data.startswith("adm_set_cust_lim:"), StateFilter("*"))
+async def admin_set_custom_limit_prompt(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    target_uid = int(callback.data.split(":")[1])
+    await state.update_data(target_custom_uid=target_uid)
+
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
+
+    await callback.message.answer(
+        f"✏️ سهمیه اختصاصی روزانه کاربر <code>{target_uid}</code> را به <b>مگابایت (MB)</b> وارد کنید:\n\n"
+        f"<blockquote>▫️ برای نامحدود کردن عدد <code>0</code> بفرستید.\n"
+        f"▫️ برای حذف محدودیت اختصاصی و برگشت به سهمیه عمومی کلمه <code>default</code> یا <code>عمومی</code> بفرستید.</blockquote>",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_user_custom_limit)
+
+
+@dp.message(AdminMessageState.waiting_for_user_custom_limit, F.chat.id == ADMIN_ID)
+async def process_user_custom_limit_input(message: aiotypes.Message, state: FSMContext):
+    data = await state.get_data()
+    target_uid = data.get("target_custom_uid")
+    if not target_uid:
+        await state.clear()
+        return await message.answer("خطا در انتخاب کاربر.")
+
+    text = (message.text or "").strip().lower()
+    if text in ["default", "عمومی", "حذف"]:
+        await set_user_custom_limit_db(target_uid, None)
+        await state.clear()
+        return await message.answer(f"✅ محدودیت اختصاصی کاربر <code>{target_uid}</code> حذف شد و روی پیش‌فرض عمومی تنظیم شد.", parse_mode="HTML")
+
+    if not text.isdigit():
+        return await message.answer("لطفاً یک عدد انگلیسی یا عبارت default ارسال کنید:")
+
+    val = int(text)
+    await set_user_custom_limit_db(target_uid, val)
+    await state.clear()
+    val_str = f"{val} مگابایت" if val > 0 else "نامحدود"
+    await message.answer(f"✅ سهمیه اختصاصی کاربر <code>{target_uid}</code> با موفقیت روی <b>{val_str}</b> تنظیم شد.", parse_mode="HTML")
+
+
 @dp.callback_query(F.data == "admin_top_users", StateFilter("*"))
 async def show_top_users(callback: aiotypes.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -1933,6 +2039,12 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
     jobs = int(u.get("total_jobs") or 0)
     today_mb = float(u.get("today_mb") or 0.0)
     banned_status = "مسدود 🚫" if u.get("is_banned") else "فعال 🟢"
+    
+    custom_lim = u.get("custom_limit_mb")
+    if custom_lim is not None:
+        custom_lim_str = f"{custom_lim} مگابایت (اختصاصی)" if custom_lim > 0 else "نامحدود (اختصاصی)"
+    else:
+        custom_lim_str = "سهمیه عمومی سیستم"
 
     text = (
         f"👤 <b>آمار مصرف کاربر:</b>\n\n"
@@ -1940,6 +2052,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
         f"▫️ یوزرنیم: {uname}\n"
         f"▫️ آیدی عددی: <code>{target_uid}</code>\n"
         f"▫️ وضعیت حساب: <b>{banned_status}</b>\n"
+        f"▫️ سقف اختصاصی: <b>{custom_lim_str}</b>\n"
         f"▫️ کل هزینه: <b>${cost:.5f}</b>\n"
         f"▫️ تعداد فایل‌ها: {jobs}\n"
         f"▫️ مصرف امروز: {today_mb:.1f} مگابایت</blockquote>"
@@ -1959,6 +2072,7 @@ async def show_single_user_stat(callback: aiotypes.CallbackQuery):
 
     ban_btn_text = "✅ رفع مسدودیت (آن‌بن)" if u.get("is_banned") else "🚫 مسدود کردن (بن)"
     builder.button(text=ban_btn_text, callback_data=f"adm_toggle_ban:{target_uid}")
+    builder.button(text="⚖️ تعیین محدودیت حجم اختصاصی", callback_data=f"adm_set_cust_lim:{target_uid}")
     builder.button(text="🔴 برگشت به لیست", callback_data="admin_top_users")
     builder.adjust(1)
 
@@ -2013,8 +2127,8 @@ async def show_limit_settings(callback: aiotypes.CallbackQuery):
     builder.adjust(3, 3, 1, 1, 1)
 
     text = (
-        f"⏱ <b>تنظیم سهمیه روزانه کاربرا:</b>\n\n"
-        f"<blockquote>▫️ سقف الان: <b>{cur_str}</b></blockquote>\n\n"
+        f"⏱ <b>تنظیم سهمیه روزانه عمومی کاربرا:</b>\n\n"
+        f"<blockquote>▫️ سقف فعلی عمومی: <b>{cur_str}</b></blockquote>\n\n"
         f"یه مقدار انتخاب کن یا خودت عدد بفرست:"
     )
     await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -2070,7 +2184,7 @@ async def ask_custom_limit(callback: aiotypes.CallbackQuery, state: FSMContext):
     cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
 
     await callback.message.answer(
-        "✏️ مقدار سهمیه روزانه رو به <b>مگابایت (MB)</b> بنویس (اگه می‌خوای نامحدود باشه <code>0</code> بفرست):",
+        "✏️ مقدار سهمیه روزانه عمومی رو به <b>مگابایت (MB)</b> بنویس (اگه می‌خوای نامحدود باشه <code>0</code> بفرست):",
         reply_markup=cancel_b.as_markup(),
         parse_mode="HTML"
     )
@@ -2087,7 +2201,7 @@ async def process_custom_limit_input(message: aiotypes.Message, state: FSMContex
     await set_daily_limit_mb(val)
     await state.clear()
     val_str = f"{val} مگابایت" if val > 0 else "نامحدود"
-    await message.answer(f"✅ سقف روزانه کاربرا روی <b>{val_str}</b> ذخیره شد.", parse_mode="HTML")
+    await message.answer(f"✅ سقف روزانه عمومی کاربرا روی <b>{val_str}</b> ذخیره شد.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "admin_back_main", StateFilter("*"))
@@ -2100,9 +2214,9 @@ async def back_to_admin_main(callback: aiotypes.CallbackQuery, state: FSMContext
     limit = await get_daily_limit_mb()
     limit_str = f"{limit} مگابایت" if limit > 0 else "نامحدود"
     await callback.message.edit_text(
-        f"👑 <b>پنل مدیریت ربات</b>\n\n"
+        f"👑 <b>پنل مدیریت ربات (نسخه {BOT_VERSION})</b>\n\n"
         f"<blockquote>👥 کل کاربرها: <b>{len(all_users)} نفر</b>\n"
-        f"⏱ سقف مصرف روزانه: <b>{limit_str}</b></blockquote>\n\n"
+        f"⏱ سقف مصرف روزانه عمومی: <b>{limit_str}</b></blockquote>\n\n"
         f"کدوم کار رو می‌خوای انجام بدی؟",
         reply_markup=get_admin_panel_keyboard(),
         parse_mode="HTML"
@@ -2128,15 +2242,43 @@ async def start_broadcast(callback: aiotypes.CallbackQuery, state: FSMContext):
 
 
 @dp.message(AdminMessageState.waiting_for_broadcast_content, F.chat.id == ADMIN_ID)
+async def stage_broadcast_confirmation(message: aiotypes.Message, state: FSMContext):
+    await state.update_data(broadcast_msg_id=message.message_id)
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 لغو عملیات", callback_data="cancel_admin_action")
+
+    await message.reply(
+        "⚠️ <b>تأیید نهایی ارسال همگانی</b>\n\n"
+        "برای جلوگیری از ارسال ناخواسته، لطفاً برای تایید دقیقاً عبارت:\n"
+        "<code>iam sure</code>\n"
+        "را ارسال کنید (حروف کوچک یا بزرگ فرقی ندارد):",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_broadcast_confirmation)
+
+
+@dp.message(AdminMessageState.waiting_for_broadcast_confirmation, F.chat.id == ADMIN_ID)
 async def process_broadcast(message: aiotypes.Message, state: FSMContext):
+    confirm_text = (message.text or "").strip().lower()
+    if confirm_text != "iam sure":
+        await state.clear()
+        return await message.answer("❌ عبارت تایید مطابقت نداشت. ارسال همگانی لغو شد.")
+
+    data = await state.get_data()
+    msg_id = data.get("broadcast_msg_id")
+    if not msg_id:
+        await state.clear()
+        return await message.answer("❌ پیام برای ارسال پیدا نشد.")
+
     users = await get_all_user_ids()
-    await message.answer(f"⏳ دارم پیام رو برای {len(users)} نفر می‌فرستم... یه کم طول می‌کشه.")
+    await message.answer(f"⏳ در حال ارسال همگانی برای {len(users)} نفر... لطفاً صبور باشید.")
 
     success = 0
     failed = 0
     for uid in users:
         try:
-            await message.copy_to(chat_id=uid)
+            await bot.copy_message(chat_id=uid, from_chat_id=ADMIN_ID, message_id=msg_id)
             success += 1
             await asyncio.sleep(0.04)
         except Exception:
