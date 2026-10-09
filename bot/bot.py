@@ -99,6 +99,7 @@ class AdminMessageState(StatesGroup):
     waiting_for_broadcast_confirm = State()
     waiting_for_custom_limit = State()
     waiting_for_user_specific_limit = State()
+    waiting_for_target_custom_user = State()
     waiting_for_reset_confirmation = State()
     waiting_for_user_search = State()
     waiting_for_ban_id = State()
@@ -407,6 +408,32 @@ async def set_user_custom_limit(user_id: int, limit_mb: int | None):
     else:
         stats["users"][u_key]["custom_limit_mb"] = limit_mb
     save_backup_stats(stats)
+
+
+async def get_all_custom_limited_users() -> list[dict]:
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT user_id, COALESCE(name, 'کاربر') AS name, COALESCE(username, '') AS username, custom_limit_mb
+                    FROM user_stats WHERE custom_limit_mb IS NOT NULL
+                    ORDER BY user_id DESC;
+                """)
+                if rows:
+                    return [dict(r) for r in rows]
+        except Exception:
+            pass
+    stats = load_backup_stats()
+    res = []
+    for uid_str, data in stats.get("users", {}).items():
+        if data.get("custom_limit_mb") is not None:
+            res.append({
+                "user_id": int(uid_str),
+                "name": data.get("name") or "کاربر",
+                "username": data.get("username") or "",
+                "custom_limit_mb": data.get("custom_limit_mb")
+            })
+    return res
 
 
 async def reset_all_daily_usage():
@@ -1382,6 +1409,7 @@ def get_admin_panel_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🏆 پرمصرف‌ترین کاربرا", callback_data="admin_top_users")
     builder.button(text="⏱ سقف سهمیه روزانه عمومی", callback_data="admin_set_limit")
+    builder.button(text="⚖️ محدودیت حجم کاربر خاص", callback_data="admin_user_limit_menu")
     builder.button(text="📢 ارسال پیام همگانی", callback_data="admin_broadcast")
     builder.button(text="👤 پیام به کاربر خاص", callback_data="admin_send_single")
     builder.button(text="🔎 جستجوی کاربر", callback_data="admin_user_search")
@@ -1820,6 +1848,96 @@ async def close_admin_panel(callback: aiotypes.CallbackQuery, state: FSMContext)
     await state.clear()
     await callback.answer()
     await callback.message.delete()
+
+
+@dp.callback_query(F.data == "admin_user_limit_menu", StateFilter("*"))
+async def admin_user_limit_menu_handler(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await callback.answer()
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📋 همه کاربر های محدود شده", callback_data="admin_limited_users_list")
+    b.button(text="➕ محدودیت کاربر جدید", callback_data="admin_prompt_new_custom_limit")
+    b.button(text="🔴 برگشت به پنل", callback_data="admin_back_main")
+    b.adjust(1)
+
+    await callback.message.edit_text(
+        "⚖️ <b>مدیریت سهمیه اختصاصی کاربران</b>\n\n"
+        "از این بخش می‌توانید برای کاربران سقف حجم روزانه جداگانه تعریف کنید یا محدودیت‌های اعمال‌شده را مدیریت کنید:\n\n"
+        "یکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=b.as_markup(),
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data == "admin_limited_users_list", StateFilter("*"))
+async def admin_limited_users_list_handler(callback: aiotypes.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    users = await get_all_custom_limited_users()
+
+    b = InlineKeyboardBuilder()
+    if not users:
+        b.button(text="➕ تعریف محدودیت جدید", callback_data="admin_prompt_new_custom_limit")
+        b.button(text="🔴 برگشت", callback_data="admin_user_limit_menu")
+        b.adjust(1)
+        return await callback.message.edit_text("📋 در حال حاضر هیچ کاربری سقف اختصاصی ندارد.", reply_markup=b.as_markup())
+
+    lines = ["📋 <b>لیست کاربران دارای سقف اختصاصی:</b>\n"]
+    for idx, u in enumerate(users[:30], 1):
+        name = html.escape((u.get("name") or "کاربر")[:18])
+        uid = u["user_id"]
+        lim = u["custom_limit_mb"]
+        lim_str = "نامحدود" if lim == 0 else f"{lim} MB"
+        lines.append(f"{idx}. {name} | <code>{uid}</code> ➔ <b>{lim_str}</b>")
+        b.button(text=f"حذف سقف {name[:10]}", callback_data=f"adm_clear_user_limit:{uid}")
+
+    b.button(text="➕ محدودیت کاربر جدید", callback_data="admin_prompt_new_custom_limit")
+    b.button(text="🔴 برگشت به منوی قبل", callback_data="admin_user_limit_menu")
+    b.adjust(1)
+    await callback.message.edit_text("\n".join(lines), reply_markup=b.as_markup(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "admin_prompt_new_custom_limit", StateFilter("*"))
+async def admin_prompt_new_custom_limit_handler(callback: aiotypes.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
+
+    await callback.message.edit_text(
+        "➕ <b>محدودیت کاربر جدید</b>\n\n"
+        "آیدی عددی کاربری که می‌خواهید برای او سقف حجم اختصاصی تعیین کنید را ارسال کنید:",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_target_custom_user)
+
+
+@dp.message(AdminMessageState.waiting_for_target_custom_user, F.chat.id == ADMIN_ID)
+async def process_target_custom_user_id(message: aiotypes.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        return await message.answer("لطفاً فقط آیدی عددی انگلیسی بفرستید:")
+    target_uid = int(text)
+    await state.update_data(limit_target_user_id=target_uid)
+
+    cancel_b = InlineKeyboardBuilder()
+    cancel_b.button(text="🔴 ولش کن", callback_data="cancel_admin_action")
+
+    await message.answer(
+        f"🎯 کاربر <code>{target_uid}</code> انتخاب شد.\n\n"
+        f"حالا مقدار سقف روزانه را به <b>مگابایت (MB)</b> بفرستید:\n"
+        f"<blockquote>▫️ برای نامحدود کردن این کاربر عدد <code>0</code> بفرستید.\n"
+        f"▫️ مثلاً <code>1000</code> برای ۱ گیگابایت.</blockquote>",
+        reply_markup=cancel_b.as_markup(),
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminMessageState.waiting_for_user_specific_limit)
 
 
 @dp.callback_query(F.data == "admin_ban_menu", StateFilter("*"))
