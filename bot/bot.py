@@ -3537,7 +3537,7 @@ async def ui_updater(state: dict):
                 if eta_val:
                     text = f"⚙️ <b>دارم فشرده می‌کنم...</b>\n{bar}\n⏱ حدوداً مونده: <b>{eta_val}</b>"
                 else:
-                    text = f"⚙️ <b>دارم فشرده و مرتبش می‌کنم...</b>\n{bar}"
+                    text = f"⚙️ <b>دارم فشرده می‌کنم...</b>\n{bar}"
             elif act == "upload":
                 text = f"📤 <b>کارش تموم شد دارم برات می‌فرستمش...</b>\n{bar}"
             else:
