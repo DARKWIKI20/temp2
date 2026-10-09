@@ -1210,7 +1210,6 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
-                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
