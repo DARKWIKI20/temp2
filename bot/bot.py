@@ -28,7 +28,7 @@ from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, Inl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-BOT_VERSION = "2.6.0"
+BOT_VERSION = "2.6.1"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
@@ -270,9 +270,9 @@ async def init_db():
     try:
         DB_POOL = await asyncpg.create_pool(
             DATABASE_URL,
-            min_size=1,
-            max_size=5,
-            command_timeout=30
+            min_size=2,
+            max_size=20,
+            command_timeout=25
         )
         async with DB_POOL.acquire() as conn:
             await conn.execute("""
@@ -1210,6 +1210,7 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
                             raw.functions.upload.SaveFilePart(
                                 file_id=fid,
                                 file_part=part_index,
+                                file_total_parts=total_parts,
                                 bytes=chunk
                             )
                         )
@@ -1239,9 +1240,13 @@ async def custom_save_file(self, path, file_id=None, file_part=0, progress=None,
 pyro.save_file = types.MethodType(custom_save_file, pyro)
 
 
-async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: float, job_id: str) -> tuple[int, str]:
+async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: float, job_id: str, timeout: float = 1800.0) -> tuple[int, str]:
+    if "-nostdin" not in cmd:
+        cmd.insert(1, "-nostdin")
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
@@ -1301,8 +1306,16 @@ async def run_ffmpeg_with_progress(cmd: list, ui_state: dict, total_duration: fl
     progress_task = asyncio.create_task(read_stdout_progress())
     stderr_task = asyncio.create_task(read_stderr_logs())
 
-    await proc.wait()
-    await asyncio.gather(progress_task, stderr_task, return_exceptions=True)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return -99, "عملیات پردازش بیش از حد طولانی شد و برای جلوگیری از قفل شدن متوقف گردید (Timeout)."
+    finally:
+        await asyncio.gather(progress_task, stderr_task, return_exceptions=True)
 
     if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
         return -1, "cancelled"
@@ -1400,7 +1413,7 @@ def format_active_users_text(data: dict) -> str:
         last = u.get("last_activity_at")
         if hasattr(last, "strftime"):
             last = last.strftime("%Y-%m-%d %H:%M")
-        lines.append(f"{i}. {name} | {uname} | <code>{u['user_id']}</code>\n   └ {html.escape(str(last or 'نامشخص'))}")
+        lines.append(f"{i}. {name} | {uname} | <code>{u['user_id']}</code>\n    └ {html.escape(str(last or 'نامشخص'))}")
     return "\n".join(lines)
 
 
@@ -1563,7 +1576,7 @@ async def get_media_meta(file_path: str) -> dict:
             "-of", "json", file_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
         data = json.loads(stdout.decode(errors="ignore"))
 
         if "format" in data and "duration" in data["format"]:
@@ -1599,28 +1612,35 @@ async def repair_video_color(input_path: str, repaired_path: str, v_codec: str) 
         ])
 
     for bsf in bsf_targets:
-        cmd = [FFMPEG_BIN, "-y", "-i", input_path, "-c", "copy", "-bsf:v", bsf, repaired_path]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await proc.wait()
-        if proc.returncode == 0 and os.path.exists(repaired_path) and os.path.getsize(repaired_path) > 0:
-            return True
+        cmd = [FFMPEG_BIN, "-y", "-nostdin", "-i", input_path, "-c", "copy", "-bsf:v", bsf, repaired_path]
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            await asyncio.wait_for(proc.wait(), timeout=60.0)
+            if proc.returncode == 0 and os.path.exists(repaired_path) and os.path.getsize(repaired_path) > 0:
+                return True
+        except Exception:
+            pass
+
         if os.path.exists(repaired_path):
             try:
                 os.remove(repaired_path)
             except OSError:
                 pass
 
-    cmd_remux = [FFMPEG_BIN, "-y", "-i", input_path, "-c", "copy", "-map", "0", repaired_path]
-    proc_remux = await asyncio.create_subprocess_exec(*cmd_remux, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    await proc_remux.wait()
-    return proc_remux.returncode == 0 and os.path.exists(repaired_path) and os.path.getsize(repaired_path) > 0
+    try:
+        cmd_remux = [FFMPEG_BIN, "-y", "-nostdin", "-i", input_path, "-c", "copy", "-map", "0", repaired_path]
+        proc_remux = await asyncio.create_subprocess_exec(*cmd_remux, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await asyncio.wait_for(proc_remux.wait(), timeout=60.0)
+        return proc_remux.returncode == 0 and os.path.exists(repaired_path) and os.path.getsize(repaired_path) > 0
+    except Exception:
+        return False
 
 
 async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
     try:
         ss_time = str(max(1, duration // 3)) if duration > 2 else "0.5"
         cmd = [
-            FFMPEG_BIN, "-y",
+            FFMPEG_BIN, "-y", "-nostdin",
             "-ss", ss_time,
             "-i", video_path,
             "-vframes", "1",
@@ -1628,7 +1648,7 @@ async def generate_thumbnail(video_path: str, thumb_path: str, duration: int):
             thumb_path
         ]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        await asyncio.wait_for(proc.communicate(), timeout=5.0)
     except Exception:
         pass
 
@@ -1713,10 +1733,9 @@ async def show_changelog_message(message: aiotypes.Message):
     changelog_text = (
         f"🚀 <b>تغییرات جدید بات (نسخه {BOT_VERSION})</b>\n\n"
         "<blockquote>"
-        "🛠 <b>رفع 12 مشکل گزارش شده:</b> پایداری کامل فرآیند پردازش، رفع خطاهای انکودر و حل باگ‌های گزارش‌شده کاربران.\n\n"
-        "⚡️ <b>بهینه‌سازی کلی و تمرکز روی فشرده‌سازی:</b> حذف بخش‌های اضافی برای سرعت و پایداری بالاتر پردازش‌ها.\n\n"
-        "🗜 <b>فشرده‌سازی خفن‌تر:</b> کیفیت و حجم بهینه‌تر شدن. اگه می‌خوای حجم تا ته بیاد پایین ولی تصویر خراب نشه، تو تنظیمات بذارش روی <b>H.265</b>.\n\n"
-        "🎨 <b>رابط کاربری تروتمیزتر:</b> منوها و دکمه‌ها مرتب شدند."
+        "🛠 <b>رفع قفل‌شدگی صف:</b> سیستم هوشمند جلوگیری از فریز شدن FFmpeg و پایروگرام پیاده‌سازی شد.\n\n"
+        "⚡️ <b>پایداری صف و ورکر:</b> اضافه شدن ناظر برای بازیابی خودکار سرور در صورت بروز فشار یا تایم‌اوت.\n\n"
+        "🗜 <b>بهینه‌سازی منابع:</b> افزایش استخر ارتباط با دیتابیس برای پاسخ‌دهی قطعی همزمان."
         "</blockquote>"
     )
     await message.answer(changelog_text, parse_mode="HTML")
@@ -1730,8 +1749,8 @@ async def show_changelog_handler(callback: aiotypes.CallbackQuery):
     changelog_text = (
         f"🚀 <b>تغییرات جدید بات (نسخه {BOT_VERSION})</b>\n\n"
         "<blockquote>"
-        "🛠 <b>رفع 12 مشکل گزارش شده</b>\n\n"
-        "⚡️ پایداری در آپلود/دانلود و تنظیم سهمیه‌های اختصاصی."
+        "🛠 <b>رفع مشکل فریز صف پردازش</b>\n\n"
+        "⚡️ پایداری در دانلود، استریم و انکود پایدار بدون قطعی."
         "</blockquote>"
     )
     await callback.message.answer(changelog_text, parse_mode="HTML")
@@ -3445,83 +3464,98 @@ async def queue_worker():
         priority, count, job = await JOB_QUEUE.get()
         job_id = job["job_id"]
 
-        if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
-            ACTIVE_PROCESSES.pop(job_id, None)
-            JOB_QUEUE.task_done()
-            continue
-
-        task = asyncio.create_task(process_job(job))
-        RUNNING_TASKS[job_id] = task
-
         try:
-            await task
-        except asyncio.CancelledError:
-            logging.info(f"Task {job_id} cancelled.")
-        except Exception as e:
-            tb = traceback.format_exc()
-            logging.error(f"Job {job_id} error:\n{tb}")
+            if ACTIVE_PROCESSES.get(job_id, {}).get("cancelled"):
+                ACTIVE_PROCESSES.pop(job_id, None)
+                continue
 
-            tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
-            clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
-
-            u = job.get("user")
-            user_id = job.get("user_id") or (u.id if u else job["chat_id"])
-            user_name = u.full_name if u else "نامشخص"
-            username = f"@{u.username}" if (u and u.username) else "ندارد"
-
-            admin_err_alert = (
-                f"🚨 <b>گزارش خطای خودکار موقع پردازش</b>\n\n"
-                f"<blockquote>👤 کاربر: {html.escape(user_name)} (<code>{user_id}</code>)\n"
-                f"🔗 یوزرنیم: {html.escape(username)}\n"
-                f"❌ متن خطا: <code>{html.escape(str(e)[:250])}</code></blockquote>\n\n"
-                f"📋 لاگ خطا:\n<pre>{html.escape(clean_tb[:800])}</pre>"
-            )
-
-            admin_err_kb = InlineKeyboardBuilder()
-            token = job.get("token")
-            if token and token in ADMIN_MEDIA_STORE:
-                admin_err_kb.button(text="📹 دانلود ویدیو", callback_data=f"adm_orig:{token}")
+            task = asyncio.create_task(process_job(job))
+            RUNNING_TASKS[job_id] = task
 
             try:
-                await bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=admin_err_alert,
-                    reply_markup=admin_err_kb.as_markup() if token else None,
-                    parse_mode="HTML"
+                await task
+            except asyncio.CancelledError:
+                logging.info(f"Task {job_id} cancelled.")
+            except Exception as e:
+                tb = traceback.format_exc()
+                logging.error(f"Job {job_id} error:\n{tb}")
+
+                tb_lines = [line for line in tb.strip().splitlines() if "site-packages" not in line]
+                clean_tb = "\n".join(tb_lines[-8:]) if tb_lines else tb[-500:]
+
+                u = job.get("user")
+                user_id = job.get("user_id") or (u.id if u else job["chat_id"])
+                user_name = u.full_name if u else "نامشخص"
+                username = f"@{u.username}" if (u and u.username) else "ندارد"
+
+                admin_err_alert = (
+                    f"🚨 <b>گزارش خطای خودکار موقع پردازش</b>\n\n"
+                    f"<blockquote>👤 کاربر: {html.escape(user_name)} (<code>{user_id}</code>)\n"
+                    f"🔗 یوزرنیم: {html.escape(username)}\n"
+                    f"❌ متن خطا: <code>{html.escape(str(e)[:250])}</code></blockquote>\n\n"
+                    f"📋 لاگ خطا:\n<pre>{html.escape(clean_tb[:800])}</pre>"
                 )
-            except Exception as adm_err:
-                logging.error(f"Alert admin error: {adm_err}")
 
-            if len(FAILED_JOBS) > 100:
-                FAILED_JOBS.pop(next(iter(FAILED_JOBS)))
+                admin_err_kb = InlineKeyboardBuilder()
+                token = job.get("token")
+                if token and token in ADMIN_MEDIA_STORE:
+                    admin_err_kb.button(text="📹 دانلود ویدیو", callback_data=f"adm_orig:{token}")
 
-            FAILED_JOBS[job_id] = {
-                "chat_id": job["chat_id"],
-                "msg_id": job["msg_id"],
-                "user_name": user_name,
-                "user_id": user_id
-            }
+                try:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=admin_err_alert,
+                        reply_markup=admin_err_kb.as_markup() if token else None,
+                        parse_mode="HTML"
+                    )
+                except Exception as adm_err:
+                    logging.error(f"Alert admin error: {adm_err}")
 
-            err_kb = InlineKeyboardBuilder()
-            err_kb.button(text="🟢 آره، بفرستش برای پشتیبانی", callback_data=f"err_send_vid:{job_id}")
-            err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
-            err_kb.adjust(1)
+                if len(FAILED_JOBS) > 100:
+                    FAILED_JOBS.pop(next(iter(FAILED_JOBS)))
 
-            user_notice = (
-                "⚠️ متأسفانه موقع کم‌حجم کردن و تبدیل این فایل یه مشکلی پیش اومد.\n\n"
-                "<blockquote>📌 ممکنه فایلت یه ایراد ساختاری داشته باشه یا کدک‌هاش استاندارد نباشه.\n"
-                "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b></blockquote>\n\n"
-                "❓ می‌خوای فایل اصلی رو بفرستیم برای پشتیبانی تا بررسیش کنن؟"
-            )
-            try:
-                await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
-            except Exception:
-                pass
-            await update_video_request_status(job_id=job_id, status="failed")
+                FAILED_JOBS[job_id] = {
+                    "chat_id": job["chat_id"],
+                    "msg_id": job["msg_id"],
+                    "user_name": user_name,
+                    "user_id": user_id
+                }
+
+                err_kb = InlineKeyboardBuilder()
+                err_kb.button(text="🟢 آره، بفرستش برای پشتیبانی", callback_data=f"err_send_vid:{job_id}")
+                err_kb.button(text="🔴 پشیمون شدم", callback_data=f"err_cancel_vid:{job_id}")
+                err_kb.adjust(1)
+
+                user_notice = (
+                    "⚠️ متأسفانه موقع کم‌حجم کردن و تبدیل این فایل یه مشکلی پیش اومد.\n\n"
+                    "<blockquote>📌 ممکنه فایلت یه ایراد ساختاری داشته باشه یا کدک‌هاش استاندارد نباشه.\n"
+                    "📨 <b>گزارش مشکل به پشتیبانی ارسال شد.</b></blockquote>\n\n"
+                    "❓ می‌خوای فایل اصلی رو بفرستیم برای پشتیبانی تا بررسیش کنن؟"
+                )
+                try:
+                    await job["status_msg"].edit_text(user_notice, reply_markup=err_kb.as_markup(), parse_mode="HTML")
+                except Exception:
+                    pass
+                await update_video_request_status(job_id=job_id, status="failed")
+            finally:
+                RUNNING_TASKS.pop(job_id, None)
+                ACTIVE_PROCESSES.pop(job_id, None)
+
+        except Exception as queue_err:
+            logging.critical(f"Unexpected error in queue loop: {queue_err}")
         finally:
-            RUNNING_TASKS.pop(job_id, None)
-            ACTIVE_PROCESSES.pop(job_id, None)
             JOB_QUEUE.task_done()
+
+
+async def queue_supervisor():
+    while True:
+        try:
+            await queue_worker()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.critical(f"Queue worker crashed unexpectedly! Restarting in 2 seconds... Error: {e}\n{traceback.format_exc()}")
+            await asyncio.sleep(2)
 
 
 async def ui_updater(state: dict):
@@ -3579,7 +3613,6 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
 
         try:
             msg = None
-
             try:
                 msg = await pyro.get_messages(
                     chat_id=job["chat_id"],
@@ -3597,33 +3630,41 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                 try:
                     with open(input_path, "wb") as f:
                         curr_bytes = 0
-                        async for chunk in pyro.stream_media(msg):
+                        stream = pyro.stream_media(msg)
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(stream.__anext__(), timeout=35.0)
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError:
+                                raise RuntimeError("تایم‌اوت دریافت چانک مدیا از تلگرام.")
+
                             if ACTIVE_PROCESSES[job["job_id"]]["cancelled"]:
                                 return
                             f.write(chunk)
                             curr_bytes += len(chunk)
                             if initial_size > 0:
-                                ui_state["percent"] = min(
-                                    99.0, (curr_bytes / initial_size) * 100.0
-                                )
+                                ui_state["percent"] = min(99.0, (curr_bytes / initial_size) * 100.0)
 
                     downloaded_bytes = os.path.getsize(input_path) if os.path.exists(input_path) else 0
 
                     if initial_size > 0 and downloaded_bytes < int(initial_size * 0.99):
                         logging.warning(
-                            f"Incomplete stream_media download: "
-                            f"{downloaded_bytes}/{initial_size} bytes"
+                            f"Incomplete stream_media download: {downloaded_bytes}/{initial_size} bytes"
                         )
                         try:
                             os.remove(input_path)
                         except OSError:
                             pass
 
-                        await pyro.download_media(
-                            msg,
-                            file_name=input_path,
-                            progress=pyro_progress,
-                            progress_args=(ui_state,)
+                        await asyncio.wait_for(
+                            pyro.download_media(
+                                msg,
+                                file_name=input_path,
+                                progress=pyro_progress,
+                                progress_args=(ui_state,)
+                            ),
+                            timeout=300.0
                         )
                 except Exception as stream_err:
                     logging.warning(
@@ -3635,11 +3676,14 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     except OSError:
                         pass
 
-                    await pyro.download_media(
-                        msg,
-                        file_name=input_path,
-                        progress=pyro_progress,
-                        progress_args=(ui_state,)
+                    await asyncio.wait_for(
+                        pyro.download_media(
+                            msg,
+                            file_name=input_path,
+                            progress=pyro_progress,
+                            progress_args=(ui_state,)
+                        ),
+                        timeout=300.0
                     )
             else:
                 if initial_size <= 19.5 * 1024 * 1024 or not msg:
@@ -3647,9 +3691,12 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
                     if file_info.file_size:
                         initial_size = file_info.file_size
                         job["file_size"] = file_info.file_size
-                    await bot.download_file(
-                        file_info.file_path,
-                        destination=input_path
+                    await asyncio.wait_for(
+                        bot.download_file(
+                            file_info.file_path,
+                            destination=input_path
+                        ),
+                        timeout=240.0
                     )
                 else:
                     raise RuntimeError("پیام فایل برای دانلود پیدا نشد.")
@@ -3677,8 +3724,7 @@ async def download_with_retry(job: dict, input_path: str, ui_state: dict, max_re
         except Exception as e:
             last_err = e
             logging.warning(
-                f"Download attempt {attempt}/{max_retries} failed for job "
-                f"{job['job_id']}: {e}"
+                f"Download attempt {attempt}/{max_retries} failed for job {job['job_id']}: {e}"
             )
             try:
                 if os.path.exists(input_path):
@@ -3775,7 +3821,7 @@ async def process_job(job: dict):
 
             if mode == "audio":
                 cmd = [
-                    FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
+                    FFMPEG_BIN, "-y", "-nostdin", "-threads", "2", "-i", input_path,
                     "-vn", "-map_metadata", "-1",
                     "-max_muxing_queue_size", "4096"
                 ]
@@ -3803,7 +3849,7 @@ async def process_job(job: dict):
                 include_real_audio = has_audio and not cfg["mute"]
 
                 cmd = [
-                    FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
+                    FFMPEG_BIN, "-y", "-nostdin", "-threads", "2", "-i", input_path,
                     "-max_muxing_queue_size", "4096"
                 ]
 
@@ -3870,7 +3916,7 @@ async def process_job(job: dict):
             eff_duration = duration / sp if (sp > 0 and duration > 0) else duration
 
             cmd = [
-                FFMPEG_BIN, "-y", "-threads", "2", "-i", input_path,
+                FFMPEG_BIN, "-y", "-nostdin", "-threads", "2", "-i", input_path,
                 "-vn", "-map_metadata", "-1",
                 "-max_muxing_queue_size", "4096"
             ]
@@ -3961,14 +4007,17 @@ async def process_job(job: dict):
 
         if is_audio_extraction or media_type == "audio":
             meta_aud = await get_media_meta(output_path)
-            sent_msg = await pyro.send_audio(
-                chat_id=chat_id,
-                audio=output_path,
-                duration=meta_aud.get("duration", 0),
-                caption=caption,
-                reply_markup=post_markup,
-                progress=pyro_progress,
-                progress_args=(ui_state,)
+            sent_msg = await asyncio.wait_for(
+                pyro.send_audio(
+                    chat_id=chat_id,
+                    audio=output_path,
+                    duration=meta_aud.get("duration", 0),
+                    caption=caption,
+                    reply_markup=post_markup,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                ),
+                timeout=400.0
             )
             delivered_file_id = sent_msg.audio.file_id
         elif media_type == "video":
@@ -3976,18 +4025,21 @@ async def process_job(job: dict):
             dur = meta_vid["duration"]
             await generate_thumbnail(output_path, thumb_path, dur)
             has_thumb = os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100
-            sent_msg = await pyro.send_video(
-                chat_id=chat_id,
-                video=output_path,
-                duration=dur,
-                width=meta_vid["width"],
-                height=meta_vid["height"],
-                thumb=thumb_path if has_thumb else None,
-                caption=caption,
-                supports_streaming=True,
-                reply_markup=post_markup,
-                progress=pyro_progress,
-                progress_args=(ui_state,)
+            sent_msg = await asyncio.wait_for(
+                pyro.send_video(
+                    chat_id=chat_id,
+                    video=output_path,
+                    duration=dur,
+                    width=meta_vid["width"],
+                    height=meta_vid["height"],
+                    thumb=thumb_path if has_thumb else None,
+                    caption=caption,
+                    supports_streaming=True,
+                    reply_markup=post_markup,
+                    progress=pyro_progress,
+                    progress_args=(ui_state,)
+                ),
+                timeout=500.0
             )
             delivered_file_id = sent_msg.video.file_id
 
@@ -4005,7 +4057,10 @@ async def process_job(job: dict):
 
         ui_state["done"] = True
         ui_task.cancel()
-        await status_msg.delete()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
         end_cpu_sec = get_cpu_seconds()
         end_wall_time = time.time()
@@ -4090,7 +4145,7 @@ async def main():
     except Exception as e:
         logging.error(f"Pyrogram start error: {e}")
 
-    asyncio.create_task(queue_worker())
+    asyncio.create_task(queue_supervisor())
     asyncio.create_task(midnight_reset_worker())
     logging.info(f"Bot v{BOT_VERSION} is now online.")
 
